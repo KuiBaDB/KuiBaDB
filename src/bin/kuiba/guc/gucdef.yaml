@@ -1,0 +1,78 @@
+# Copyright 2020 <盏一 w@hidva.com>
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+# http://www.apache.org/licenses/LICENSE-2.0
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# We define the hook in guc mod.
+# preassign(newval, oldstate), the oldstate is used to store current guc values.
+# preassign should print some warn logs if it return false.
+#
+# Currently, boot_val of GUC except STR supports expression,
+# for example, you can specify the boot_val of max_connection to `1 + 1`.
+# We need a marker to determine whether the boot_val of a string is an expression or a string literal,
+# maybe we can use `@@` as the marker.
+#
+# On the other hand, we can rewrite gucdef.yaml in rust and put it as part of build.rs, maybe it is the right way.
+#
+#- vartype: INT
+#  name: max_connections
+#  context: SIGHUP
+#  short_desc: Sets the maximum number of concurrent connections.
+#  long_desc: xxxx
+#  boot_val: 16
+#  preassign: TheNameOfPreAssignHook
+#  show: TheNameOfShowHook
+#  flags: xxx | yyy
+- vartype: INT
+  name: max_connections
+  context: SIGHUP
+  short_desc: Sets the maximum number of concurrent connections.
+  boot_val: 16
+- vartype: INT
+  name: port
+  context: POSTMASTER
+  short_desc: Sets the TCP port the server listens on.
+  boot_val: 1218
+- vartype: STR
+  name: log_min_messages
+  context: SIGHUP
+  short_desc: Sets the message levels that are logged.
+  long_desc: The valid values are OFF, ERROR, WARNING, INFO, DEBUG1, DEBUG2.
+  boot_val: DEBUG2
+  preassign: log_min_messages_preassign
+  show: log_min_messages_show
+- vartype: STR
+  name: server_version
+  context: INTERNAL
+  short_desc: "Shows the server version."
+  boot_val: "0.0.1"
+  flags: REPORT
+- vartype: STR
+  name: server_encoding
+  context: INTERNAL
+  short_desc: Sets the server (database) character set encoding.
+  boot_val: UTF8
+  flags: REPORT
+- vartype: STR
+  name: client_encoding
+  context: INTERNAL
+  short_desc: Sets the client's character set encoding.
+  boot_val: UTF8
+  flags: REPORT
+- vartype: BOOL
+  name: is_superuser
+  context: INTERNAL
+  short_desc: Shows whether the current user is a superuser.
+  boot_val: true
+  flags: REPORT
+- vartype: REAL
+  name: seq_page_cost
+  context: USERSET
+  short_desc: Sets the planner's estimate of the cost of a sequentially fetched disk page.
+  boot_val: 1.0
