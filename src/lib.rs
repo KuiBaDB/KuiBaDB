@@ -30,4 +30,6 @@ pub fn init_log() {
 }
 
 mod oids;
-pub use oids::Oid::*;
+
+pub use oids::Oid;
+pub use oids::OidEnum::*;

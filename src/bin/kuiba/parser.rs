@@ -10,13 +10,21 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-pub const ERRCODE_UNDEFINED_DATABASE: &str = "3D000";
-pub const ERRCODE_CONNECTION_FAILURE: &str = "08006";
-pub const ERRCODE_PROTOCOL_VIOLATION: &str = "08P01";
-pub const ERRCODE_QUERY_CANCELED: &str = "57014";
-pub const ERRCODE_ADMIN_SHUTDOWN: &str = "57P01";
-pub const ERRCODE_SYNTAX_ERROR: &str = "42601";
-pub const ERRCODE_INTERNAL_ERROR: &str = "XX000";
-pub const ERRCODE_FEATURE_NOT_SUPPORTED: &str = "0A000";
-pub const ERRCODE_UNDEFINED_OBJECT: &str = "42704";
-pub const ERRCODE_INVALID_PARAMETER_VALUE: &str = "22023";
+use crate::{protocol, ErrCode};
+use anyhow::{anyhow, Context};
+use sqlparser::ast::Statement;
+
+pub enum Query<'a> {
+    Utility(&'a Statement),
+}
+
+pub fn analyze(stmt: &Statement) -> anyhow::Result<Query<'_>> {
+    match stmt {
+        Statement::Query(..)
+        | Statement::Insert { .. }
+        | Statement::Update { .. }
+        | Statement::Delete { .. } => Err(anyhow!("analyze failed. unsupport statement"))
+            .context(ErrCode(protocol::ERRCODE_FEATURE_NOT_SUPPORTED)),
+        _ => Ok(Query::Utility(stmt)),
+    }
+}

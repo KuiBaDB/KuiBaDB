@@ -11,20 +11,30 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 #![allow(dead_code)]
+use crate::utils::{AttrNumber, TypLen, TypMod, Xid};
 use anyhow;
 use clap::{App, Arg};
-use kuiba::*;
+use kuiba::{init_log, Oid, VarcharOid};
 use log;
 use rand;
+use sqlparser::ast::Statement;
+use sqlparser::dialect::PostgreSqlDialect;
+use sqlparser::parser::Parser;
 use std::collections::HashMap;
 use std::net::{TcpListener, TcpStream};
 use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc, Mutex};
 use std::thread;
 
 mod catalog;
-pub mod common;
+mod common;
 mod guc;
+mod parser;
 mod protocol;
+mod utility;
+mod utils;
+
+use parser::Query;
+use utils::SessionState;
 
 struct CancelState {
     key: u32,
@@ -49,10 +59,6 @@ fn new_sessid(lastused: &mut u32) -> u32 {
     *lastused
 }
 
-type Oid = std::num::NonZeroU32;
-// type Xid = std::num::NonZeroU64;
-type Xid = u64;
-
 struct SessionDroper<'a> {
     map: &'a Mutex<CancelMap>,
     id: u32,
@@ -71,22 +77,20 @@ impl Drop for SessionDroper<'_> {
     }
 }
 
-macro_rules! _session_fatal {
-    ($stream: expr, $code: expr, $errmsg: expr) => {{
-        log::error!("{}", &$errmsg);
-        let msg = protocol::ErrorResponse::new("FATAL", $code, &$errmsg);
-        protocol::write_message($stream, &msg);
-    }};
+fn do_session_fatal(stream: &mut TcpStream, code: &str, msg: &str) {
+    log::error!("{}", msg);
+    let msg = protocol::ErrorResponse::new("FATAL", code, msg);
+    protocol::write_message(stream, &msg);
 }
 
 macro_rules! session_fatal {
     ($stream: expr, $code: expr, $fmt: expr, $($arg:tt)*) => {
         let ___session_fatal_errmsg = format!($fmt, $($arg)*);
-        _session_fatal!($stream, $code, ___session_fatal_errmsg);
+        do_session_fatal($stream, $code, &___session_fatal_errmsg);
     };
     ($stream: expr, $code: expr, $fmt: expr) => {
         let ___session_fatal_errmsg = format!($fmt);
-        _session_fatal!($stream, $code, ___session_fatal_errmsg);
+        do_session_fatal($stream, $code, &___session_fatal_errmsg);
     };
 }
 
@@ -119,7 +123,8 @@ fn postgres_main(
 ) {
     let stream = &mut streamv;
     log::info!(
-        "receive connection. remote={}",
+        "receive connection. sessid={} remote={}",
+        sessid,
         stream
             .peer_addr()
             .map_or("UNKNOWN ADDR".to_string(), |v| v.to_string())
@@ -159,6 +164,7 @@ fn postgres_main(
     };
     log::info!("receive startup message. msg={:?}", &startup_msg);
 
+    // validate
     let expected_client_encoding = guc::get_str(&gucstate, guc::CLIENT_ENCODING);
     if !startup_msg.check_client_encoding(expected_client_encoding) {
         session_fatal!(
@@ -184,41 +190,52 @@ fn postgres_main(
     };
     log::info!("connect database. dboid={}", reqdb);
 
+    // post-validate
     let sesskey = rand::random();
     let termreq = insert_cancel_map(&cancelmap, sessid, sesskey);
     let _droper = SessionDroper::new(&cancelmap, sessid);
+    let mut state = SessionState {
+        sessid: sessid,
+        reqdb: reqdb,
+        termreq: termreq,
+        gucstate: gucstate,
+        cli: streamv,
+        dead: false,
+        pgdialect: PostgreSqlDialect {},
+    };
+    // post-validate for client-side
+    state.write_message(&protocol::AuthenticationOk {});
+    protocol::report_all_gucs(&state.gucstate, &mut state.cli);
+    state.write_message(&protocol::BackendKeyData::new(sessid, sesskey));
     macro_rules! check_termreq {
         () => {
-            if termreq.load(Ordering::Relaxed) {
-                session_fatal!(
-                    stream,
-                    protocol::ERRCODE_ADMIN_SHUTDOWN,
-                    "terminating connection due to administrator command"
-                );
+            if state.received_termreq() {
                 return;
             }
         };
     }
-
-    protocol::write_message(stream, &protocol::AuthenticationOk {});
-    protocol::report_all_gucs(&gucstate, stream);
-    protocol::write_message(stream, &protocol::BackendKeyData::new(sessid, sesskey));
+    macro_rules! fatal {
+        ($code: expr, $fmt: expr, $($arg:tt)*) => {
+            let ___session_fatal_errmsg = format!($fmt, $($arg)*);
+            state.fatal($code, &___session_fatal_errmsg);
+            return;
+        };
+        ($code: expr, $fmt: expr) => {
+            state.fatal($code, $fmt);
+            return;
+        };
+    }
 
     loop {
         check_termreq!();
-        protocol::write_message(
-            stream,
-            &protocol::ReadyForQuery::new(protocol::XactStatus::IDLE),
-        );
-        let (msgtype, msgdata) = match protocol::read_message(stream) {
+        state.write_message(&protocol::ReadyForQuery::new(protocol::XactStatus::IDLE));
+        let (msgtype, msgdata) = match state.read_message() {
             Err(err) => {
-                session_fatal!(
-                    stream,
+                fatal!(
                     protocol::ERRCODE_CONNECTION_FAILURE,
                     "read_message failed. err={}",
                     err
                 );
-                return;
             }
             Ok(v) => v,
         };
@@ -229,29 +246,111 @@ fn postgres_main(
             return;
         }
         if msgtype != protocol::MsgType::Query as i8 {
-            session_fatal!(
-                stream,
+            fatal!(
                 protocol::ERRCODE_PROTOCOL_VIOLATION,
                 "unexpected msg. expected=Q actual={}",
                 msgtype
             );
-            return;
         }
         let query = match protocol::Query::deserialize(&msgdata) {
             Err(err) => {
-                session_fatal!(
-                    stream,
+                fatal!(
                     protocol::ERRCODE_PROTOCOL_VIOLATION,
                     "unexpected query msg. err={:?}",
                     err
                 );
-                return;
             }
             Ok(query) => query,
         };
-        log::info!("receive query. {}", query.query);
-        thread::sleep(std::time::Duration::from_millis(3000));
-        protocol::write_message(stream, &protocol::CommandComplete { tag: "KUIBA" });
+        exec_simple_query(query.query, &mut state);
+        if state.dead {
+            return;
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ErrCode(&'static str);
+
+impl std::fmt::Display for ErrCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+fn get_errcode(err: &anyhow::Error) -> &'static str {
+    err.downcast_ref::<ErrCode>()
+        .map_or(protocol::ERRCODE_INTERNAL_ERROR, |v| v.0)
+}
+
+fn write_str_response(resp: &utility::StrResp, session: &mut SessionState) {
+    session.write_message(&protocol::RowDescription {
+        fields: &[protocol::FieldDesc::new(
+            &resp.name,
+            VarcharOid.into(),
+            TypMod(None),
+            TypLen::Var,
+        )],
+    });
+    session.write_message(&protocol::DataRow {
+        data: &[Some(&resp.val)],
+    });
+}
+
+fn write_cmd_complete(tag: &str, session: &mut SessionState) {
+    session.write_message(&protocol::CommandComplete { tag });
+}
+
+fn exec_utility(stmt: &Statement, session: &mut SessionState) {
+    let resp = match utility::process_utility(stmt, session) {
+        Ok(v) => v,
+        Err(ref err) => {
+            session.on_error(err);
+            return;
+        }
+    };
+    if let Some(ref strresp) = resp.resp {
+        write_str_response(strresp, session);
+    }
+    write_cmd_complete(&resp.tag, session);
+}
+
+fn exec_simple_query(query: &str, session: &mut SessionState) {
+    log::info!("receive query. {}", query.replace("\n", " "));
+    let ast = match Parser::parse_sql(&session.pgdialect, query) {
+        Ok(v) => v,
+        Err(err) => {
+            session.error(
+                protocol::ERRCODE_SYNTAX_ERROR,
+                &format!("parse query failed. err={}", err),
+            );
+            return;
+        }
+    };
+    log::trace!("parse query. ast={:?}", ast);
+    let ast = if ast.is_empty() {
+        session.write_message(&protocol::EmptyQueryResponse {});
+        return;
+    } else if ast.len() > 1 {
+        session.error(
+            protocol::ERRCODE_FEATURE_NOT_SUPPORTED,
+            "there should be only one query in the Q message",
+        );
+        return;
+    } else {
+        &ast[0]
+    };
+
+    let query = match parser::analyze(&ast) {
+        Ok(v) => v,
+        Err(ref err) => {
+            session.on_error(err);
+            return;
+        }
+    };
+
+    match query {
+        Query::Utility(stmt) => exec_utility(stmt, session),
     }
 }
 

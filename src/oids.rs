@@ -12,10 +12,12 @@ limitations under the License.
 */
 #[repr(u32)]
 #[allow(non_camel_case_types)]
-pub enum Oid {
+#[derive(Clone, Copy)]
+pub enum OidEnum {
     Template0Db = 1,
     KuiBaDb = 2,
     PG_CATALOG_NAMESPACE = 11,
+    VarcharOid = 1043,
     TypeRelationId = 1247,
     AttributeRelationId = 1249,
     ProcedureRelationId = 1255,
@@ -25,4 +27,12 @@ pub enum Oid {
     NamespaceRelationId = 2615,
     OperatorRelationId = 2617,
     MAX_OID = 16384, // The oid of system catalogs should be less than MAX_OID.
+}
+
+pub type Oid = std::num::NonZeroU32;
+
+impl std::convert::From<OidEnum> for Oid {
+    fn from(val: OidEnum) -> Oid {
+        Oid::new(val as u32).unwrap()
+    }
 }

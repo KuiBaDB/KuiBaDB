@@ -117,6 +117,7 @@ dependencies = [
  "quote",
  "rand",
  "sqlite",
+ "sqlparser",
  "stderrlog",
  "yaml-rust",
 ]
@@ -266,6 +267,15 @@ checksum = "71fec807a1534bd13eeaaec396175d67c79bdc68df55e18a452726ec62a8fb08"
 dependencies = [
  "libc",
  "sqlite3-src",
+]
+
+[[package]]
+name = "sqlparser"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53fa7478852b3ea28f0d21a42b2d7dade24ba4aa72e22bf66982e4b587a7f608"
+dependencies = [
+ "log",
 ]
 
 [[package]]

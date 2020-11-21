@@ -97,12 +97,12 @@ enum GucMeta {
 
 #[derive(Debug)]
 #[allow(non_camel_case_types)]
-enum Source {
+pub enum Source {
     FILE, // kuiba.conf
     SET,  // SET command
 }
 
-fn get_gucidx(name: &str) -> Option<GucIdx> {
+pub fn get_gucidx(name: &str) -> Option<GucIdx> {
     GUC_NAMEINFO_MAP.get(name).map(|v| *v)
 }
 
@@ -172,41 +172,6 @@ fn preassign(gucgen: &Generic, gucsrc: Source) -> bool {
     ret
 }
 
-/*
-fn apply_guc(gucmeta: &GucIdx, gucstate: &mut GucState, gucstr: &Yaml, gucsrc: Source) {
-    macro_rules! handle_guc {
-        // yamlto: yaml_try_tostr, yaml_try_tof64~
-        // gucmeta_arr: STR_GUCS, REAL_GUCS~
-        // gucval_arr: str_vals, real_vals~
-        ($gucmeta_arr: ident, $yamlto: ident, $gucval_arr: ident, $idx: ident) => {{
-            let gucval = common::$yamlto(gucstr);
-            if gucval.is_none() {
-                log::warn!(
-                    "Unknown gucval. expected type={} gucstr={:?}",
-                    stringify!($yamlto),
-                    gucstr
-                );
-                return;
-            }
-            let mut gucval = gucval.unwrap();
-            let meta = &$gucmeta_arr[$idx as usize];
-            if preassign(&meta.gen, gucsrc)
-                && (meta.preassign.is_none() || meta.preassign.unwrap()(&mut gucval, gucstate))
-            {
-                let gucvalptr = &mut gucstate.vals.$gucval_arr[$idx as usize];
-                *gucvalptr = gucval;
-            }
-        }};
-    }
-    match gucmeta {
-        &GucIdx::B(idx) => handle_guc!(BOOL_GUCS, yaml_try_tobool, bool_vals, idx),
-        &GucIdx::I(idx) => handle_guc!(INT_GUCS, yaml_try_toi32, int_vals, idx),
-        &GucIdx::S(idx) => handle_guc!(STR_GUCS, yaml_try_tostr, str_vals, idx),
-        &GucIdx::R(idx) => handle_guc!(REAL_GUCS, yaml_try_tof64, real_vals, idx),
-    }
-}
-*/
-
 macro_rules! def_apply_fn {
     ($fnname: ident, $valty: ident, $valarr: ident, $metaarr: ident) => {
         fn $fnname(idx: usize, mut val: $valty, gucstate: &mut GucState, gucsrc: Source) {
@@ -225,6 +190,22 @@ def_apply_fn!(apply_int_guc, i32, int_vals, INT_GUCS);
 def_apply_fn!(apply_bool_guc, bool, bool_vals, BOOL_GUCS);
 def_apply_fn!(apply_real_guc, f64, real_vals, REAL_GUCS);
 def_apply_fn!(apply_str_guc, String, str_vals, STR_GUCS);
+
+pub fn set_int_guc(idx: gucdef::I, val: i32, gucstate: &mut GucState) {
+    apply_int_guc(idx as usize, val, gucstate, Source::SET);
+}
+
+pub fn set_str_guc(idx: gucdef::S, val: String, gucstate: &mut GucState) {
+    apply_str_guc(idx as usize, val, gucstate, Source::SET);
+}
+
+pub fn set_real_guc(idx: gucdef::R, val: f64, gucstate: &mut GucState) {
+    apply_real_guc(idx as usize, val, gucstate, Source::SET);
+}
+
+pub fn set_bool_guc(idx: gucdef::B, val: bool, gucstate: &mut GucState) {
+    apply_bool_guc(idx as usize, val, gucstate, Source::SET);
+}
 
 fn load_gucs(input: &str) -> anyhow::Result<GucVals> {
     let mut gucvals = GucVals::default();
@@ -278,7 +259,7 @@ fn load_gucs(input: &str) -> anyhow::Result<GucVals> {
 
 pub fn load_apply_gucs(inputpath: &str, gucstate: &mut GucState) -> anyhow::Result<()> {
     let gucvals = load_gucs(inputpath)?;
-    // It's not right to use FILE as the source, the value of GUC which
+    // TODO: It's not right to use FILE as the source, the value of GUC which
     // isn't defined in the configuration file comes from their boot value.
     for (idx, &val) in gucvals.int_vals.iter().enumerate() {
         apply_int_guc(idx, val, gucstate, Source::FILE);

@@ -169,7 +169,7 @@ const KB_ATTRIBUTE_ATTRS: [Attr; 8] = [
     },
     Attr {
         name: "atttypmod",
-        desc: "int4",
+        desc: "signed int4",
         sqlite_type: "int",
     },
     Attr {

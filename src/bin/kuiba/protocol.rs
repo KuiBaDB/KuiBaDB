@@ -10,7 +10,8 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-use crate::guc;
+use crate::utils::{TypLen, TypMod};
+use crate::{guc, AttrNumber, Oid};
 use byteorder::{NetworkEndian, ReadBytesExt, WriteBytesExt};
 use std::collections::HashMap;
 use std::io::{Cursor, ErrorKind, Read, Seek, SeekFrom, Write};
@@ -86,8 +87,7 @@ pub enum MsgType {
 }
 
 pub fn write_message<T: Message>(stream: &mut TcpStream, msg: &T) {
-    let d = msg.serialize();
-    let _ = stream.write_all(d.as_slice());
+    let _ = stream.write_all(&msg.serialize());
 }
 
 pub trait Message {
@@ -124,15 +124,22 @@ fn read_cstr<'a>(cursor: &mut Cursor<&'a [u8]>) -> std::io::Result<&'a str> {
     if !cstrdata.is_ascii() {
         return Err(std::io::Error::new(ErrorKind::InvalidData, "onho"));
     }
-    let retstr = unsafe { std::str::from_utf8_unchecked(cstrdata) };
+    let retstr = match std::str::from_utf8(cstrdata) {
+        Err(err) => return Err(std::io::Error::new(ErrorKind::InvalidData, err)),
+        Ok(v) => v,
+    };
     cursor.set_position(idx as u64 + 1);
     Ok(retstr)
 }
 
-fn write_cstr<T: Write>(writer: &mut T, buf: &[u8]) -> std::io::Result<()> {
-    writer.write_all(buf)?;
-    writer.write_u8(0)
+trait CStrWriter: WriteBytesExt {
+    fn write_cstr(&mut self, buf: &str) -> std::io::Result<()> {
+        self.write_all(buf.as_bytes())?;
+        self.write_u8(0)
+    }
 }
+
+impl<W: WriteBytesExt> CStrWriter for W {}
 
 impl StartupMessage<'_> {
     pub fn deserialize(d: &[u8]) -> std::io::Result<StartupMessage<'_>> {
@@ -210,7 +217,7 @@ fn serialize_errmsg(typ: u8, fields: &ErrFields) -> Vec<u8> {
         ($field: ident, $fieldtype: literal) => {
             if let Some(v) = fields.$field {
                 writer.write_u8($fieldtype as u8).unwrap();
-                write_cstr(&mut writer, v.as_bytes()).unwrap();
+                writer.write_cstr(v).unwrap();
             }
         };
     }
@@ -386,7 +393,7 @@ impl Message for CommandComplete<'_> {
     fn serialize(&self) -> Vec<u8> {
         let mut writer = Cursor::new(Vec::new());
         writer.seek(SeekFrom::Start(5)).unwrap();
-        write_cstr(&mut writer, self.tag.as_bytes()).unwrap();
+        writer.write_cstr(self.tag).unwrap();
         let msglen = writer.position() - 1;
         writer.seek(SeekFrom::Start(0)).unwrap();
         writer.write_u8('C' as u8).unwrap();
@@ -410,8 +417,8 @@ impl Message for ParameterStatus<'_> {
     fn serialize(&self) -> Vec<u8> {
         let mut writer = Cursor::new(Vec::new());
         writer.seek(SeekFrom::Start(5)).unwrap();
-        write_cstr(&mut writer, self.name.as_bytes()).unwrap();
-        write_cstr(&mut writer, self.value.as_bytes()).unwrap();
+        writer.write_cstr(self.name).unwrap();
+        writer.write_cstr(self.value).unwrap();
         let msglen = writer.position() - 1;
         writer.seek(SeekFrom::Start(0)).unwrap();
         writer.write_u8('S' as u8).unwrap();
@@ -439,5 +446,125 @@ pub fn report_guc(
 pub fn report_all_gucs(gucvals: &guc::GucState, stream: &mut TcpStream) {
     for (&name, &gucidx) in guc::GUC_NAMEINFO_MAP.iter() {
         report_guc(name, gucvals, gucidx, stream)
+    }
+}
+
+pub struct EmptyQueryResponse {}
+
+impl Message for EmptyQueryResponse {
+    fn serialize(&self) -> Vec<u8> {
+        let mut writer = Cursor::new(Vec::new());
+        writer.write_u8('I' as u8).unwrap();
+        writer.write_u32::<NetworkEndian>(4).unwrap();
+        writer.into_inner()
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Format {
+    Text = 0,
+}
+
+pub struct FieldDesc<'a> {
+    name: &'a str,
+    reloid: Option<Oid>,
+    typoid: Oid,
+    typmod: TypMod,
+    attnum: Option<AttrNumber>,
+    typlen: TypLen,
+    format: Format,
+}
+
+impl FieldDesc<'_> {
+    pub const fn new(name: &str, typoid: Oid, typmod: TypMod, typlen: TypLen) -> FieldDesc<'_> {
+        FieldDesc {
+            name,
+            reloid: None,
+            typoid,
+            typmod,
+            attnum: None,
+            typlen,
+            format: Format::Text,
+        }
+    }
+}
+
+pub struct RowDescription<'a, 'b> {
+    pub fields: &'b [FieldDesc<'a>],
+}
+
+impl Message for RowDescription<'_, '_> {
+    fn serialize(&self) -> Vec<u8> {
+        let mut writer = Cursor::new(Vec::new());
+        writer.seek(SeekFrom::Start(5)).unwrap();
+        writer
+            .write_u16::<NetworkEndian>(self.fields.len() as u16)
+            .unwrap();
+        for field in self.fields {
+            writer.write_cstr(field.name).unwrap();
+            writer
+                .write_u32::<NetworkEndian>(match field.reloid {
+                    None => 0,
+                    Some(v) => v.get(),
+                })
+                .unwrap();
+            writer
+                .write_u16::<NetworkEndian>(match field.attnum {
+                    None => 0,
+                    Some(v) => v.get(),
+                })
+                .unwrap();
+            writer
+                .write_u32::<NetworkEndian>(field.typoid.get())
+                .unwrap();
+            writer
+                .write_i16::<NetworkEndian>(field.typlen.into())
+                .unwrap();
+            writer
+                .write_i32::<NetworkEndian>(field.typmod.into())
+                .unwrap();
+            writer
+                .write_u16::<NetworkEndian>(field.format as u16)
+                .unwrap();
+        }
+        let msglen = writer.position() - 1;
+        writer.seek(SeekFrom::Start(0)).unwrap();
+        writer.write_u8('T' as u8).unwrap();
+        writer.write_u32::<NetworkEndian>(msglen as u32).unwrap();
+        writer.into_inner()
+    }
+}
+
+pub struct DataRow<'a, 'b> {
+    pub data: &'b [Option<&'a str>],
+}
+
+impl Message for DataRow<'_, '_> {
+    fn serialize(&self) -> Vec<u8> {
+        let mut writer = Cursor::new(Vec::new());
+        writer.seek(SeekFrom::Start(5)).unwrap();
+        writer
+            .write_u16::<NetworkEndian>(self.data.len() as u16)
+            .unwrap();
+        for &col in self.data {
+            match col {
+                None => {
+                    writer.write_i32::<NetworkEndian>(-1).unwrap();
+                    continue;
+                }
+                Some(dataval) => {
+                    // no need for trailing '\0'
+                    writer
+                        .write_i32::<NetworkEndian>(dataval.len() as i32)
+                        .unwrap();
+                    writer.write_all(dataval.as_bytes()).unwrap();
+                }
+            }
+        }
+        let msglen = writer.position() - 1;
+        writer.seek(SeekFrom::Start(0)).unwrap();
+        writer.write_u8('D' as u8).unwrap();
+        writer.write_u32::<NetworkEndian>(msglen as u32).unwrap();
+        writer.into_inner()
     }
 }
