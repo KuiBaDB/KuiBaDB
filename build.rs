@@ -11,6 +11,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 #![allow(dead_code)]
+use lalrpop;
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote, ToTokens};
 use std::env;
@@ -310,4 +311,5 @@ fn copy_common() {
 fn main() {
     gen_gucdef();
     copy_common();
+    lalrpop::process_root().unwrap();
 }

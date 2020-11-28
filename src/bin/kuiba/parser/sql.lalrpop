@@ -1,0 +1,160 @@
+// Copyright 2020 <盏一 w@hidva.com>
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+// http://www.apache.org/licenses/LICENSE-2.0
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use super::syn;
+use std::str::FromStr;
+
+grammar;
+
+pub Stmt: syn::Stmt<'input> = {
+    <s:StmtNoSemi> => s,
+    <s:StmtNoSemi> ";" => s,
+}
+
+StmtNoSemi: syn::Stmt<'input> = {
+    <s:VariableSetStmt> => syn::Stmt::VariableSet(s),
+    <s:VariableShowStmt> => syn::Stmt::VariableShow(s),
+    // EMPTY
+    => syn::Stmt::Empty,
+}
+
+VariableShowStmt: syn::Located<syn::VariableShowStmt<'input>> = {
+    <s:@L> SHOW <n:var_name> <e:@R> => syn::Located::<syn::VariableShowStmt> {
+        loc: syn::Location {s, e},
+        node: syn::VariableShowStmt {
+            name: n,
+        }
+    }
+}
+
+VariableSetStmt: syn::Located<syn::VariableSetStmt<'input>> = {
+    <s:@L> SET <n:set_rest> <e:@R> => syn::Located::<syn::VariableSetStmt> {
+        loc: syn::Location {s, e},
+        node: n,
+    },
+}
+
+set_rest: syn::VariableSetStmt<'input> = {
+    <s:set_rest_more> => s,
+}
+
+set_rest_more: syn::VariableSetStmt<'input> = {
+    <s:generic_set> => s,
+}
+
+generic_set: syn::VariableSetStmt<'input> = {
+    <n:var_name> TO <v:var_value> => syn::VariableSetStmt {
+        name: n,
+        val: v,
+    },
+    <n:var_name> "=" <v:var_value> => syn::VariableSetStmt {
+        name: n,
+        val: v,
+    }
+}
+
+var_value: syn::Located<syn::A_Const<'input>> = {
+    <s:@L> <v:opt_boolean_or_string> <e:@R> => syn::Located::<syn::A_Const> {
+        loc: syn::Location {s, e},
+        node: syn::A_Const {
+            val: syn::Value::Str(v),
+        },
+    },
+    <s:@L> <v:NumericOnly> <e:@R> => syn::Located::<syn::A_Const> {
+        loc: syn::Location {s, e},
+        node: syn::A_Const {
+            val: syn::Value::Num(v),
+        },
+    },
+}
+
+NumericOnly: syn::NumVal<'input> = {
+    <v:I_or_F_const> => v,
+    "+" <v:I_or_F_const> => v,
+    "-" <v:I_or_F_const> => v.neg(),
+}
+
+I_or_F_const: syn::NumVal<'input> = {
+    <s:DECIMAL> => syn::NumVal::Float{neg: false, v: s},
+    <s:INTEGER> => {
+        if let Ok(v) = i32::from_str(s) {
+            syn::NumVal::Int(v)
+        } else {
+            syn::NumVal::Float{neg: false, v: s}
+        }
+    }
+}
+
+opt_boolean_or_string: syn::StrVal<'input> = {
+    TRUE_P => syn::StrVal::InPlace("true"),
+    FALSE_P => syn::StrVal::InPlace("false"),
+    <s:Sconst> => s,
+}
+
+Sconst: syn::StrVal<'input> = {
+    <s:SCONST> => s,
+}
+
+SCONST: syn::StrVal<'input> = {
+    // It seems that if we want to support escape, we have to implement our lexer.
+    <s:XB> => syn::StrVal::InPlace(&s[1..s.len()-1]),
+}
+
+var_name: syn::Located<syn::StrVal<'input>> = {
+    <s:ColId> => s,
+    <s:@L> <n:var_name> "." <v:ColId> <e:@R> => syn::Located::<syn::StrVal> {
+        loc: syn::Location {s, e},
+        node: syn::StrVal::Dyn(format!("{}.{}", &*n.node, &*v.node)),
+    }
+}
+
+ColId: syn::Located<syn::StrVal<'input>> = {
+    <s:IDENT> => s,
+}
+
+match {
+    // keywords
+    r"[tT][oO]" => TO,
+    r"[sS][eE][tT]" => SET,
+    r"[sS][hH][oO][wW]" => SHOW,
+    r"[tT][rR][uU][eE]" => TRUE_P,
+    r"[fF][aA][lL][sS][eE]" => FALSE_P,
+} else {
+    r"[a-z_][a-z0-9_]*" => LOWERCASE_ID,
+} else {
+    r"[a-zA-Z_][0-9a-zA-Z_]*" => ID,
+    r"[0-9]*\.[0-9]+|[0-9]+\.[0-9]*" => DECIMAL,
+    r"[0-9]+" => INTEGER,
+} else {
+    r"'[^']*'" => XB,
+    _,
+}
+
+IDENT: syn::Located<syn::StrVal<'input>> = {
+
+    <s:@L> <v:LOWERCASE_ID> <e:@R> => syn::Located::<syn::StrVal> {
+        loc: syn::Location {s, e},
+        node: syn::StrVal::InPlace(v),
+    },
+
+    <s:@L> <v:ID> <e:@R> => syn::Located::<syn::StrVal> {
+        loc: syn::Location {s, e},
+        node: syn::StrVal::Dyn(v.to_ascii_lowercase()),
+    },
+
+    <s:@L> "\"" <v:ID> "\"" <e:@R> => syn::Located::<syn::StrVal> {
+        loc: syn::Location {s, e},
+        node: syn::StrVal::InPlace(v),
+    },
+
+}
+
+

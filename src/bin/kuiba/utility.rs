@@ -10,9 +10,9 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+use crate::parser::{sem, syn};
 use crate::{guc, protocol, ErrCode, SessionState};
 use anyhow::{anyhow, Context};
-use sqlparser::ast::{Ident, SetVariableValue, Statement, Value};
 use std::sync::Arc;
 
 pub struct StrResp {
@@ -25,83 +25,66 @@ pub struct Response {
     pub tag: String,
 }
 
-fn to_i32(val: &SetVariableValue) -> anyhow::Result<i32> {
+fn to_i32(val: &syn::Value) -> anyhow::Result<i32> {
     match val {
-        SetVariableValue::Ident(_) => {
-            Err(anyhow!("to_i32 failed")).context(ErrCode(protocol::ERRCODE_SYNTAX_ERROR))
-        }
-        SetVariableValue::Literal(literal) => match literal {
-            Value::Number(rawval) => rawval
-                .parse()
-                .context(ErrCode(protocol::ERRCODE_INVALID_PARAMETER_VALUE)),
-            Value::SingleQuotedString(rawval) => rawval
-                .parse()
-                .context(ErrCode(protocol::ERRCODE_INVALID_PARAMETER_VALUE)),
-            _ => Err(anyhow!("to_i32 failed"))
-                .context(ErrCode(protocol::ERRCODE_INVALID_PARAMETER_VALUE)),
+        syn::Value::Num(v) => match v {
+            &syn::NumVal::Int(v) => Ok(v),
+            &syn::NumVal::Float { neg, v } => {
+                let v = v.parse::<f64>()?;
+                Ok((if neg { -v } else { v }) as i32)
+            }
         },
+        syn::Value::Str(v) => Ok(v.parse::<i32>()?),
     }
 }
 
-fn to_bool(val: &SetVariableValue) -> anyhow::Result<bool> {
+fn to_bool(val: &syn::Value) -> anyhow::Result<bool> {
     match val {
-        SetVariableValue::Ident(_) => {
-            Err(anyhow!("to_bool failed")).context(ErrCode(protocol::ERRCODE_SYNTAX_ERROR))
-        }
-        SetVariableValue::Literal(literal) => match literal {
-            Value::Number(rawval) => rawval
-                .parse::<i32>()
-                .context(ErrCode(protocol::ERRCODE_INVALID_PARAMETER_VALUE))
-                .map(|v| v != 0),
-            Value::SingleQuotedString(rawval) => Ok(if rawval.eq_ignore_ascii_case("on") {
-                true
-            } else {
-                false
-            }),
-            &Value::Boolean(rawval) => Ok(rawval),
-            _ => Err(anyhow!("to_bool failed"))
+        syn::Value::Num(v) => match v {
+            &syn::NumVal::Int(v) => Ok(v != 0),
+            &syn::NumVal::Float { .. } => Err(anyhow!("requires a Boolean value"))
                 .context(ErrCode(protocol::ERRCODE_INVALID_PARAMETER_VALUE)),
         },
+        syn::Value::Str(v) => Ok(v.eq_ignore_ascii_case("on") || v.eq_ignore_ascii_case("true")),
     }
 }
 
-fn to_f64(val: &SetVariableValue) -> anyhow::Result<f64> {
+fn to_f64(val: &syn::Value) -> anyhow::Result<f64> {
     match val {
-        SetVariableValue::Ident(_) => {
-            Err(anyhow!("to_f64 failed")).context(ErrCode(protocol::ERRCODE_SYNTAX_ERROR))
-        }
-        SetVariableValue::Literal(literal) => match literal {
-            Value::Number(rawval) => rawval
-                .parse()
-                .context(ErrCode(protocol::ERRCODE_INVALID_PARAMETER_VALUE)),
-            Value::SingleQuotedString(rawval) => rawval
-                .parse()
-                .context(ErrCode(protocol::ERRCODE_INVALID_PARAMETER_VALUE)),
-            _ => Err(anyhow!("to_f64 failed"))
-                .context(ErrCode(protocol::ERRCODE_INVALID_PARAMETER_VALUE)),
+        syn::Value::Num(v) => match v {
+            &syn::NumVal::Int(v) => Ok(v as f64),
+            &syn::NumVal::Float { neg, v } => {
+                let v = v.parse::<f64>()?;
+                Ok(if neg { -v } else { v })
+            }
         },
+        syn::Value::Str(v) => Ok(v.parse::<f64>()?),
     }
 }
 
-fn to_str(val: &SetVariableValue) -> anyhow::Result<String> {
-    match val {
-        SetVariableValue::Ident(Ident { value, .. }) => Ok(value.to_string()),
-        SetVariableValue::Literal(literal) => match literal {
-            Value::Number(rawval) => Ok(rawval.to_string()),
-            Value::SingleQuotedString(rawval) => Ok(rawval.to_string()),
-            &Value::Boolean(rawval) => Ok(rawval.to_string()),
-            _ => Err(anyhow!("to_str failed"))
-                .context(ErrCode(protocol::ERRCODE_INVALID_PARAMETER_VALUE)),
+fn to_str(val: &syn::Value) -> anyhow::Result<String> {
+    Ok(match val {
+        syn::Value::Num(v) => match v {
+            &syn::NumVal::Int(v) => v.to_string(),
+            &syn::NumVal::Float { neg, v } => {
+                if !neg {
+                    v.to_string()
+                } else {
+                    format!("-{}", v)
+                }
+            }
         },
-    }
+        syn::Value::Str(v) => v.to_string(),
+    })
 }
 
 fn set_guc(
-    name: &Ident,
-    val: &SetVariableValue,
+    stmt: &syn::Located<syn::VariableSetStmt>,
     state: &mut SessionState,
 ) -> anyhow::Result<Response> {
-    let gucidx = match guc::get_gucidx(&name.value) {
+    let gucname = &stmt.node.name.node;
+    let val = &stmt.node.val.node.val;
+    let gucidx = match guc::get_gucidx(gucname) {
         Some(v) => v,
         None => {
             return Err(anyhow!("unknown guc")).context(ErrCode(protocol::ERRCODE_UNDEFINED_OBJECT))
@@ -132,8 +115,12 @@ fn set_guc(
     })
 }
 
-fn get_guc(name: &Ident, state: &SessionState) -> anyhow::Result<Response> {
-    let gucidx = match guc::get_gucidx(&name.value) {
+fn get_guc(
+    stmt: &syn::Located<syn::VariableShowStmt>,
+    state: &SessionState,
+) -> anyhow::Result<Response> {
+    let gucname = &stmt.node.name.node;
+    let gucidx = match guc::get_gucidx(gucname) {
         Some(v) => v,
         None => {
             return Err(anyhow!("unknown guc")).context(ErrCode(protocol::ERRCODE_UNDEFINED_OBJECT))
@@ -143,20 +130,19 @@ fn get_guc(name: &Ident, state: &SessionState) -> anyhow::Result<Response> {
     let gucshow = guc::show(generic, &state.gucstate, gucidx);
     Ok(Response {
         resp: Some(StrResp {
-            name: name.value.to_string(),
+            name: gucname.to_string(),
             val: gucshow,
         }),
         tag: "SHOW".to_string(),
     })
 }
 
-pub fn process_utility(stmt: &Statement, state: &mut SessionState) -> anyhow::Result<Response> {
+pub fn process_utility(
+    stmt: &sem::UtilityStmt,
+    state: &mut SessionState,
+) -> anyhow::Result<Response> {
     match stmt {
-        Statement::SetVariable {
-            variable, value, ..
-        } => set_guc(variable, value, state),
-        Statement::ShowVariable { variable } => get_guc(variable, state),
-        _ => Err(anyhow!("process_utility failed. unsupport statement"))
-            .context(ErrCode(protocol::ERRCODE_FEATURE_NOT_SUPPORTED)),
+        &sem::UtilityStmt::VariableSet(v) => set_guc(v, state),
+        &sem::UtilityStmt::VariableShow(v) => get_guc(v, state),
     }
 }

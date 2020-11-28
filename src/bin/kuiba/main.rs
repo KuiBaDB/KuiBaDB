@@ -17,9 +17,6 @@ use clap::{App, Arg};
 use kuiba::{init_log, Oid, VarcharOid};
 use log;
 use rand;
-use sqlparser::ast::Statement;
-use sqlparser::dialect::PostgreSqlDialect;
-use sqlparser::parser::Parser;
 use std::collections::HashMap;
 use std::net::{TcpListener, TcpStream};
 use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc, Mutex};
@@ -33,7 +30,6 @@ mod protocol;
 mod utility;
 mod utils;
 
-use parser::Query;
 use utils::SessionState;
 
 struct CancelState {
@@ -201,7 +197,6 @@ fn postgres_main(
         gucstate: gucstate,
         cli: streamv,
         dead: false,
-        pgdialect: PostgreSqlDialect {},
     };
     // post-validate for client-side
     state.write_message(&protocol::AuthenticationOk {});
@@ -301,7 +296,7 @@ fn write_cmd_complete(tag: &str, session: &mut SessionState) {
     session.write_message(&protocol::CommandComplete { tag });
 }
 
-fn exec_utility(stmt: &Statement, session: &mut SessionState) {
+fn exec_utility(stmt: &parser::sem::UtilityStmt, session: &mut SessionState) {
     let resp = match utility::process_utility(stmt, session) {
         Ok(v) => v,
         Err(ref err) => {
@@ -317,7 +312,7 @@ fn exec_utility(stmt: &Statement, session: &mut SessionState) {
 
 fn exec_simple_query(query: &str, session: &mut SessionState) {
     log::info!("receive query. {}", query.replace("\n", " "));
-    let ast = match Parser::parse_sql(&session.pgdialect, query) {
+    let ast = match parser::parse(query) {
         Ok(v) => v,
         Err(err) => {
             session.error(
@@ -328,20 +323,12 @@ fn exec_simple_query(query: &str, session: &mut SessionState) {
         }
     };
     log::trace!("parse query. ast={:?}", ast);
-    let ast = if ast.is_empty() {
+    if let parser::syn::Stmt::Empty = ast {
         session.write_message(&protocol::EmptyQueryResponse {});
         return;
-    } else if ast.len() > 1 {
-        session.error(
-            protocol::ERRCODE_FEATURE_NOT_SUPPORTED,
-            "there should be only one query in the Q message",
-        );
-        return;
-    } else {
-        &ast[0]
-    };
+    }
 
-    let query = match parser::analyze(&ast) {
+    let query = match parser::sem::analyze(&ast) {
         Ok(v) => v,
         Err(ref err) => {
             session.on_error(err);
@@ -350,7 +337,7 @@ fn exec_simple_query(query: &str, session: &mut SessionState) {
     };
 
     match query {
-        Query::Utility(stmt) => exec_utility(stmt, session),
+        parser::sem::Stmt::Utility(ref stmt) => exec_utility(stmt, session),
     }
 }
 

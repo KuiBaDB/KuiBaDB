@@ -10,21 +10,16 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-use crate::{protocol, ErrCode};
-use anyhow::{anyhow, Context};
-use sqlparser::ast::Statement;
+use anyhow::anyhow;
+use lalrpop_util::lalrpop_mod;
 
-pub enum Query<'a> {
-    Utility(&'a Statement),
-}
+pub mod sem;
+pub mod syn;
+lalrpop_mod!(sql, "/bin/kuiba/parser/sql.rs");
 
-pub fn analyze(stmt: &Statement) -> anyhow::Result<Query<'_>> {
-    match stmt {
-        Statement::Query(..)
-        | Statement::Insert { .. }
-        | Statement::Update { .. }
-        | Statement::Delete { .. } => Err(anyhow!("analyze failed. unsupport statement"))
-            .context(ErrCode(protocol::ERRCODE_FEATURE_NOT_SUPPORTED)),
-        _ => Ok(Query::Utility(stmt)),
+pub fn parse(query: &str) -> anyhow::Result<syn::Stmt> {
+    match sql::StmtParser::new().parse(query) {
+        Ok(v) => Ok(v),
+        Err(err) => Err(anyhow!("Parse Error. {:?}", err)),
     }
 }

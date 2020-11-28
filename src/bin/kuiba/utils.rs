@@ -21,7 +21,6 @@ pub struct SessionState {
     pub cli: TcpStream,
 
     pub dead: bool,
-    pub pgdialect: PostgreSqlDialect,
 }
 
 impl SessionState {
