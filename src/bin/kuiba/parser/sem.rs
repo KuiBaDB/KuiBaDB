@@ -11,9 +11,11 @@
 
 use super::syn;
 
+// 'syn is the lifetime of syntax tree returned by parser::parse().
+
 pub enum UtilityStmt<'syn, 'input> {
-    VariableSet(&'syn syn::Located<syn::VariableSetStmt<'input>>),
-    VariableShow(&'syn syn::Located<syn::VariableShowStmt<'input>>),
+    VariableSet(&'syn syn::VariableSetStmt<'input>),
+    VariableShow(&'syn syn::VariableShowStmt<'input>),
 }
 
 pub enum Stmt<'syn, 'input> {

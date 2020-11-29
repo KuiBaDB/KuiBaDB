@@ -15,31 +15,28 @@ use std::str::FromStr;
 grammar;
 
 pub Stmt: syn::Stmt<'input> = {
-    <s:StmtNoSemi> => s,
-    <s:StmtNoSemi> ";" => s,
+    <s:stmt> => s,
+    <s:stmt> ";" => s,
 }
 
-StmtNoSemi: syn::Stmt<'input> = {
+// For every symbol X in sql.lalrpop, if there is a definition of Y with the same name in postgres/gram.y,
+// then X must be a subset of Y.
+
+stmt: syn::Stmt<'input> = {
     <s:VariableSetStmt> => syn::Stmt::VariableSet(s),
     <s:VariableShowStmt> => syn::Stmt::VariableShow(s),
     // EMPTY
     => syn::Stmt::Empty,
 }
 
-VariableShowStmt: syn::Located<syn::VariableShowStmt<'input>> = {
-    <s:@L> SHOW <n:var_name> <e:@R> => syn::Located::<syn::VariableShowStmt> {
-        loc: syn::Location {s, e},
-        node: syn::VariableShowStmt {
-            name: n,
-        }
+VariableShowStmt: syn::VariableShowStmt<'input> = {
+    SHOW <n:var_name> => syn::VariableShowStmt {
+        name: n,
     }
 }
 
-VariableSetStmt: syn::Located<syn::VariableSetStmt<'input>> = {
-    <s:@L> SET <n:set_rest> <e:@R> => syn::Located::<syn::VariableSetStmt> {
-        loc: syn::Location {s, e},
-        node: n,
-    },
+VariableSetStmt: syn::VariableSetStmt<'input> = {
+    SET <n:set_rest> => n,
 }
 
 set_rest: syn::VariableSetStmt<'input> = {
@@ -61,18 +58,15 @@ generic_set: syn::VariableSetStmt<'input> = {
     }
 }
 
-var_value: syn::Located<syn::A_Const<'input>> = {
-    <s:@L> <v:opt_boolean_or_string> <e:@R> => syn::Located::<syn::A_Const> {
-        loc: syn::Location {s, e},
-        node: syn::A_Const {
-            val: syn::Value::Str(v),
-        },
+var_value: syn::A_Const<'input> = {
+    <s:@L> <v:opt_boolean_or_string> <e:@R> => syn::A_Const {
+        val: syn::Value::Str(v),
+        loc: syn::Location {s, e}
     },
-    <s:@L> <v:NumericOnly> <e:@R> => syn::Located::<syn::A_Const> {
+
+    <s:@L> <v:NumericOnly> <e:@R> => syn::A_Const {
+        val: syn::Value::Num(v),
         loc: syn::Location {s, e},
-        node: syn::A_Const {
-            val: syn::Value::Num(v),
-        },
     },
 }
 
@@ -108,15 +102,12 @@ SCONST: syn::StrVal<'input> = {
     <s:XB> => syn::StrVal::InPlace(&s[1..s.len()-1]),
 }
 
-var_name: syn::Located<syn::StrVal<'input>> = {
+var_name: syn::StrVal<'input> = {
     <s:ColId> => s,
-    <s:@L> <n:var_name> "." <v:ColId> <e:@R> => syn::Located::<syn::StrVal> {
-        loc: syn::Location {s, e},
-        node: syn::StrVal::Dyn(format!("{}.{}", &*n.node, &*v.node)),
-    }
+    <n:var_name> "." <v:ColId> => syn::StrVal::Dyn(format!("{}.{}", &*n, &*v)),
 }
 
-ColId: syn::Located<syn::StrVal<'input>> = {
+ColId: syn::StrVal<'input> = {
     <s:IDENT> => s,
 }
 
@@ -138,22 +129,13 @@ match {
     _,
 }
 
-IDENT: syn::Located<syn::StrVal<'input>> = {
+IDENT: syn::StrVal<'input> = {
 
-    <s:@L> <v:LOWERCASE_ID> <e:@R> => syn::Located::<syn::StrVal> {
-        loc: syn::Location {s, e},
-        node: syn::StrVal::InPlace(v),
-    },
+    <v:LOWERCASE_ID> => syn::StrVal::InPlace(v),
 
-    <s:@L> <v:ID> <e:@R> => syn::Located::<syn::StrVal> {
-        loc: syn::Location {s, e},
-        node: syn::StrVal::Dyn(v.to_ascii_lowercase()),
-    },
+    <v:ID> => syn::StrVal::Dyn(v.to_ascii_lowercase()),
 
-    <s:@L> "\"" <v:ID> "\"" <e:@R> => syn::Located::<syn::StrVal> {
-        loc: syn::Location {s, e},
-        node: syn::StrVal::InPlace(v),
-    },
+    "\"" <v:ID> "\"" => syn::StrVal::InPlace(v),
 
 }
 

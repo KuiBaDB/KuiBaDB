@@ -78,12 +78,9 @@ fn to_str(val: &syn::Value) -> anyhow::Result<String> {
     })
 }
 
-fn set_guc(
-    stmt: &syn::Located<syn::VariableSetStmt>,
-    state: &mut SessionState,
-) -> anyhow::Result<Response> {
-    let gucname = &stmt.node.name.node;
-    let val = &stmt.node.val.node.val;
+fn set_guc(stmt: &syn::VariableSetStmt, state: &mut SessionState) -> anyhow::Result<Response> {
+    let gucname = &stmt.name;
+    let val = &stmt.val.val;
     let gucidx = match guc::get_gucidx(gucname) {
         Some(v) => v,
         None => {
@@ -115,11 +112,8 @@ fn set_guc(
     })
 }
 
-fn get_guc(
-    stmt: &syn::Located<syn::VariableShowStmt>,
-    state: &SessionState,
-) -> anyhow::Result<Response> {
-    let gucname = &stmt.node.name.node;
+fn get_guc(stmt: &syn::VariableShowStmt, state: &SessionState) -> anyhow::Result<Response> {
+    let gucname = &stmt.name;
     let gucidx = match guc::get_gucidx(gucname) {
         Some(v) => v,
         None => {

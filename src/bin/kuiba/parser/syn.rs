@@ -56,31 +56,26 @@ pub struct Location {
 }
 
 #[derive(Debug)]
-pub struct Located<T> {
-    pub loc: Location,
-    pub node: T,
-}
-
-#[derive(Debug)]
 #[allow(non_camel_case_types)]
 pub struct A_Const<'input> {
     pub val: Value<'input>,
+    pub loc: Location,
 }
 
 #[derive(Debug)]
 pub struct VariableSetStmt<'input> {
-    pub name: Located<StrVal<'input>>,
-    pub val: Located<A_Const<'input>>,
+    pub name: StrVal<'input>,
+    pub val: A_Const<'input>,
 }
 
 #[derive(Debug)]
 pub struct VariableShowStmt<'input> {
-    pub name: Located<StrVal<'input>>,
+    pub name: StrVal<'input>,
 }
 
 #[derive(Debug)]
 pub enum Stmt<'input> {
-    VariableSet(Located<VariableSetStmt<'input>>),
-    VariableShow(Located<VariableShowStmt<'input>>),
+    VariableSet(VariableSetStmt<'input>),
+    VariableShow(VariableShowStmt<'input>),
     Empty,
 }
