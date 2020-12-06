@@ -10,6 +10,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+use crate::commands::typecmds::define_type;
 use crate::parser::{sem, syn};
 use crate::{guc, protocol, ErrCode, SessionState};
 use anyhow::{anyhow, Context};
@@ -22,7 +23,7 @@ pub struct StrResp {
 
 pub struct Response {
     pub resp: Option<StrResp>,
-    pub tag: String,
+    pub tag: &'static str,
 }
 
 fn to_i32(val: &syn::Value) -> anyhow::Result<i32> {
@@ -108,7 +109,7 @@ fn set_guc(stmt: &syn::VariableSetStmt, state: &mut SessionState) -> anyhow::Res
     }
     Ok(Response {
         resp: None,
-        tag: "SET".to_string(),
+        tag: "SET",
     })
 }
 
@@ -127,7 +128,7 @@ fn get_guc(stmt: &syn::VariableShowStmt, state: &SessionState) -> anyhow::Result
             name: gucname.to_string(),
             val: gucshow,
         }),
-        tag: "SHOW".to_string(),
+        tag: "SHOW",
     })
 }
 
@@ -138,5 +139,6 @@ pub fn process_utility(
     match stmt {
         &sem::UtilityStmt::VariableSet(v) => set_guc(v, state),
         &sem::UtilityStmt::VariableShow(v) => get_guc(v, state),
+        &sem::UtilityStmt::DefineType(v) => define_type(v, state),
     }
 }

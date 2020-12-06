@@ -20,6 +20,12 @@ pub enum StrVal<'input> {
 impl std::ops::Deref for StrVal<'_> {
     type Target = str;
     fn deref(&self) -> &Self::Target {
+        self.as_str()
+    }
+}
+
+impl StrVal<'_> {
+    pub fn as_str(&self) -> &str {
         match self {
             &StrVal::InPlace(val) => val,
             StrVal::Dyn(val) => val.as_str(),
@@ -49,7 +55,7 @@ pub enum Value<'input> {
     Str(StrVal<'input>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Location {
     pub s: usize,
     pub e: usize,
@@ -77,5 +83,95 @@ pub struct VariableShowStmt<'input> {
 pub enum Stmt<'input> {
     VariableSet(VariableSetStmt<'input>),
     VariableShow(VariableShowStmt<'input>),
+    DefineType(DefineTypeStmt<'input>),
+    Select(SelectStmt<'input>),
     Empty,
+}
+
+#[derive(Debug)]
+pub enum DefElemVal<'input> {
+    Val(Value<'input>),
+}
+
+#[derive(Debug)]
+pub struct DefElemAdd<'input> {
+    defnamespace: StrVal<'input>,
+    defname: StrVal<'input>,
+    arg: DefElemVal<'input>,
+}
+
+pub struct DefElemSet<'input> {
+    elem: DefElemAdd<'input>,
+}
+
+pub struct DefElemDrop<'input> {
+    defnamespace: StrVal<'input>,
+    defname: StrVal<'input>,
+}
+
+#[derive(Debug)]
+pub struct DefineTypeStmt<'input> {
+    pub defnames: Vec<StrVal<'input>>,
+    pub definition: Option<Vec<DefElemAdd<'input>>>,
+}
+
+#[allow(non_camel_case_types)]
+#[derive(Debug)]
+pub enum Expr<'input> {
+    A_Const(A_Const<'input>),
+    A_Expr(A_Expr<'input>),
+}
+
+#[allow(non_camel_case_types)]
+#[derive(Debug)]
+pub enum A_Expr_Kind {
+    AEXPR_OP,
+    AEXPR_OP_ANY,
+    AEXPR_OP_ALL,
+    AEXPR_DISTINCT,
+    AEXPR_NOT_DISTINCT,
+    AEXPR_NULLIF,
+    AEXPR_IN,
+    AEXPR_LIKE,
+    AEXPR_ILIKE,
+    AEXPR_SIMILAR,
+    AEXPR_BETWEEN,
+    AEXPR_NOT_BETWEEN,
+    AEXPR_BETWEEN_SYM,
+    AEXPR_NOT_BETWEEN_SYM,
+    AEXPR_PAREN,
+}
+
+#[derive(Debug)]
+pub enum AExprOprands<'input> {
+    One(Expr<'input>),
+    Two(Expr<'input>, Expr<'input>),
+}
+
+#[allow(non_camel_case_types)]
+#[derive(Debug)]
+pub struct A_Expr<'input> {
+    pub kind: A_Expr_Kind,
+    pub name: Vec<StrVal<'input>>,
+    pub oprands: Box<AExprOprands<'input>>,
+    pub loc: Location,
+}
+
+#[derive(Debug)]
+pub struct InsertResTarget<'input> {
+    pub name: Option<StrVal<'input>>,
+    pub loc: Location,
+}
+
+#[derive(Debug)]
+pub struct ResTarget<'input> {
+    pub name: Option<StrVal<'input>>,
+    pub val: Expr<'input>,
+    pub loc: Location,
+}
+
+#[derive(Debug)]
+pub struct SelectStmt<'input> {
+    // tlist may be empty. `select from table` is valid.
+    pub tlist: Vec<ResTarget<'input>>,
 }

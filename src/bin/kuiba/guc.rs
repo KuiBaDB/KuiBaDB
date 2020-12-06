@@ -49,6 +49,8 @@ pub struct GucState {
 
     // log_min_messages
     pub loglvl: log::LevelFilter,
+
+    pub base_search_path_valid: bool,
 }
 
 impl Default for GucState {
@@ -56,6 +58,7 @@ impl Default for GucState {
         GucState {
             vals: GucVals::default(),
             loglvl: log::LevelFilter::Trace,
+            base_search_path_valid: false,
         }
     }
 }
@@ -319,4 +322,9 @@ fn log_min_messages_show(_: &GucState) -> String {
         log::LevelFilter::Trace => "DEBUG2",
     }
     .to_string()
+}
+
+fn search_path_preassign(_val: &mut String, gucstate: &mut GucState) -> bool {
+    gucstate.base_search_path_valid = false;
+    true
 }

@@ -76,3 +76,9 @@
   context: USERSET
   short_desc: Sets the planner's estimate of the cost of a sequentially fetched disk page.
   boot_val: 1.0
+- vartype: STR
+  name: search_path
+  context: USERSET
+  short_desc: Sets the schema search order for names that are not schema-qualified.
+  boot_val: "public,kb_catalog"
+  preassign: search_path_preassign

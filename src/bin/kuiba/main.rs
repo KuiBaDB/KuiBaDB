@@ -11,19 +11,21 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 #![allow(dead_code)]
-use crate::utils::{AttrNumber, TypLen, TypMod, Xid};
+use crate::utils::{AttrNumber, TypLen, TypMod};
 use anyhow;
 use clap::{App, Arg};
-use kuiba::{init_log, Oid, VarcharOid};
+use kuiba::{init_log, VARCHAROID};
 use log;
 use rand;
 use std::collections::HashMap;
 use std::net::{TcpListener, TcpStream};
-use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc, Mutex};
+use std::sync::{atomic::AtomicBool, atomic::AtomicU32, atomic::Ordering, Arc, Mutex};
 use std::thread;
 
 mod catalog;
+mod commands;
 mod common;
+mod datumblock;
 mod guc;
 mod parser;
 mod protocol;
@@ -114,6 +116,7 @@ fn handle_cancel_request(cancelmap: &Mutex<CancelMap>, cancel_req: protocol::Can
 fn postgres_main(
     cancelmap: Arc<Mutex<CancelMap>>,
     gucstate: Arc<guc::GucState>,
+    _oid_creator: Arc<AtomicU32>,
     mut streamv: TcpStream,
     sessid: u32,
 ) {
@@ -171,7 +174,7 @@ fn postgres_main(
         );
         return;
     }
-    let reqdb = match catalog::get_database(&startup_msg.database()) {
+    let (reqdb, dbname) = match catalog::get_database(&startup_msg.database()) {
         Err(err) => {
             session_fatal!(
                 stream,
@@ -182,22 +185,27 @@ fn postgres_main(
             );
             return;
         }
-        Ok(db) => db.oid,
+        Ok(db) => (db.oid, db.datname),
     };
     log::info!("connect database. dboid={}", reqdb);
+    let metaconn = match sqlite::open(format!("base/{}/meta.db", reqdb)) {
+        Err(err) => {
+            session_fatal!(
+                stream,
+                protocol::ERRCODE_INTERNAL_ERROR,
+                "connt open metaconn. err={}",
+                err
+            );
+            return;
+        }
+        Ok(conn) => conn,
+    };
 
     // post-validate
     let sesskey = rand::random();
     let termreq = insert_cancel_map(&cancelmap, sessid, sesskey);
     let _droper = SessionDroper::new(&cancelmap, sessid);
-    let mut state = SessionState {
-        sessid: sessid,
-        reqdb: reqdb,
-        termreq: termreq,
-        gucstate: gucstate,
-        cli: streamv,
-        dead: false,
-    };
+    let mut state = SessionState::new(sessid, reqdb, dbname, termreq, gucstate, streamv, metaconn);
     // post-validate for client-side
     state.write_message(&protocol::AuthenticationOk {});
     protocol::report_all_gucs(&state.gucstate, &mut state.cli);
@@ -282,8 +290,8 @@ fn write_str_response(resp: &utility::StrResp, session: &mut SessionState) {
     session.write_message(&protocol::RowDescription {
         fields: &[protocol::FieldDesc::new(
             &resp.name,
-            VarcharOid.into(),
-            TypMod(None),
+            VARCHAROID.into(),
+            TypMod::none(),
             TypLen::Var,
         )],
     });
@@ -328,7 +336,7 @@ fn exec_simple_query(query: &str, session: &mut SessionState) {
         return;
     }
 
-    let query = match parser::sem::analyze(&ast) {
+    let query = match parser::sem::kb_analyze(session, &ast) {
         Ok(v) => v,
         Err(ref err) => {
             session.on_error(err);
@@ -338,6 +346,16 @@ fn exec_simple_query(query: &str, session: &mut SessionState) {
 
     match query {
         parser::sem::Stmt::Utility(ref stmt) => exec_utility(stmt, session),
+        parser::sem::Stmt::Optimizable(ref stmt) => {
+            write_str_response(
+                &utility::StrResp {
+                    name: "SELECT".to_string(),
+                    val: format!("{:#?}", stmt),
+                },
+                session,
+            );
+            write_cmd_complete("SELECT 1", session);
+        }
     }
 }
 
@@ -345,12 +363,13 @@ fn main() {
     init_log();
     let mut gucstate: Arc<guc::GucState> = Arc::default();
     let cancelmap: Arc<Mutex<CancelMap>> = Arc::default();
+    let oid_creator: Arc<AtomicU32> = Arc::new(AtomicU32::new(std::u32::MAX));
     let mut lastused_sessid = 20181218;
     log::set_max_level(gucstate.loglvl);
-    let cmdline = App::new("KuiBa(魁拔) Database")
+    let cmdline = App::new("KuiBaDB(魁拔)")
         .version(kuiba::KB_VERSTR)
         .author("盏一 <w@hidva.com>")
-        .about("KuiBa Database is another Postgresql written in Rust")
+        .about("KuiBaDB is another Postgresql written in Rust")
         .arg(
             Arg::with_name("datadir")
                 .short("D")
@@ -375,9 +394,10 @@ fn main() {
         let stream = stream.unwrap();
         let cancelmap = cancelmap.clone();
         let gucstate = gucstate.clone();
+        let oid_creator = oid_creator.clone();
         let sessid = new_sessid(&mut lastused_sessid);
         thread::spawn(move || {
-            postgres_main(cancelmap, gucstate, stream, sessid);
+            postgres_main(cancelmap, gucstate, oid_creator, stream, sessid);
         });
     }
 }

@@ -10,20 +10,51 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-use crate::*;
-use std::num::{NonZeroU16, NonZeroU32};
+use crate::catalog::namespace::SessionStateExt as NameSpaceSessionStateExt;
+use crate::{do_session_fatal, get_errcode, guc, protocol, TcpStream};
+use kuiba::Oid;
+use std::debug_assert;
+use std::num::NonZeroU16;
+use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc};
+
+pub mod fmgr;
 
 pub struct SessionState {
     pub sessid: u32,
     pub reqdb: Oid,
+    pub db: String,
     pub termreq: Arc<AtomicBool>,
     pub gucstate: Arc<guc::GucState>,
     pub cli: TcpStream,
+    pub metaconn: sqlite::Connection,
 
     pub dead: bool,
+    pub nsstate: NameSpaceSessionStateExt,
 }
 
 impl SessionState {
+    pub fn new(
+        sessid: u32,
+        reqdb: Oid,
+        db: String,
+        termreq: Arc<AtomicBool>,
+        gucstate: Arc<guc::GucState>,
+        cli: TcpStream,
+        metaconn: sqlite::Connection,
+    ) -> Self {
+        Self {
+            sessid,
+            reqdb,
+            db,
+            termreq,
+            gucstate,
+            cli,
+            metaconn,
+            dead: false,
+            nsstate: NameSpaceSessionStateExt::default(),
+        }
+    }
+
     pub fn fatal(&mut self, code: &str, msg: &str) {
         self.dead = true;
         do_session_fatal(&mut self.cli, code, msg);
@@ -60,7 +91,8 @@ impl SessionState {
     }
 }
 
-#[derive(Copy, Clone)]
+// The maximum length of a fixed length type is 2 ^ 15 - 1, so this will never overflow
+#[derive(Copy, Clone, Debug)]
 pub enum TypLen {
     Var,
     Fixed(NonZeroU16),
@@ -69,7 +101,6 @@ pub enum TypLen {
 impl std::convert::From<i16> for TypLen {
     fn from(val: i16) -> Self {
         if val < 0 {
-            // should be -1
             TypLen::Var
         } else {
             TypLen::Fixed(NonZeroU16::new(val as u16).unwrap())
@@ -81,30 +112,39 @@ impl std::convert::From<TypLen> for i16 {
     fn from(val: TypLen) -> Self {
         match val {
             TypLen::Var => -1,
-            TypLen::Fixed(v) => v.get() as i16, // will never overflow.
+            TypLen::Fixed(v) => v.get() as i16,
         }
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct TypMod(pub Option<NonZeroU32>);
+// We don't want to increase the size of the TypMod
+#[derive(Clone, Copy, Debug)]
+pub struct TypMod(i32);
+
+impl TypMod {
+    pub fn none() -> TypMod {
+        TypMod(-1)
+    }
+
+    pub fn is_none(self) -> bool {
+        self.0 < 0
+    }
+
+    pub fn get(self) -> i32 {
+        debug_assert!(!self.is_none());
+        self.0
+    }
+}
 
 impl std::convert::From<i32> for TypMod {
     fn from(val: i32) -> Self {
-        if val < 0 {
-            TypMod(None)
-        } else {
-            TypMod(NonZeroU32::new(val as u32 + 1))
-        }
+        Self(val)
     }
 }
 
 impl std::convert::From<TypMod> for i32 {
     fn from(val: TypMod) -> i32 {
-        match val.0 {
-            None => -1,
-            Some(v) => (v.get() - 1) as i32,
-        }
+        val.0
     }
 }
 

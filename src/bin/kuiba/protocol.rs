@@ -11,8 +11,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 use crate::utils::{TypLen, TypMod};
-use crate::{guc, AttrNumber, Oid};
+use crate::{guc, AttrNumber};
 use byteorder::{NetworkEndian, ReadBytesExt, WriteBytesExt};
+use kuiba::{Oid, OptOid};
 use std::collections::HashMap;
 use std::io::{Cursor, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::net::TcpStream;
@@ -467,7 +468,7 @@ enum Format {
 
 pub struct FieldDesc<'a> {
     name: &'a str,
-    reloid: Option<Oid>,
+    reloid: OptOid,
     typoid: Oid,
     typmod: TypMod,
     attnum: Option<AttrNumber>,
@@ -479,7 +480,7 @@ impl FieldDesc<'_> {
     pub const fn new(name: &str, typoid: Oid, typmod: TypMod, typlen: TypLen) -> FieldDesc<'_> {
         FieldDesc {
             name,
-            reloid: None,
+            reloid: OptOid(None),
             typoid,
             typmod,
             attnum: None,
@@ -503,10 +504,7 @@ impl Message for RowDescription<'_, '_> {
         for field in self.fields {
             writer.write_cstr(field.name).unwrap();
             writer
-                .write_u32::<NetworkEndian>(match field.reloid {
-                    None => 0,
-                    Some(v) => v.get(),
-                })
+                .write_u32::<NetworkEndian>(field.reloid.into())
                 .unwrap();
             writer
                 .write_u16::<NetworkEndian>(match field.attnum {
