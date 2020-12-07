@@ -14,7 +14,7 @@ limitations under the License.
 use crate::utils::{AttrNumber, TypLen, TypMod};
 use anyhow;
 use clap::{App, Arg};
-use kuiba::{init_log, VARCHAROID};
+use kuiba::{init_log, Oid, VARCHAROID};
 use log;
 use rand;
 use std::collections::HashMap;
@@ -22,11 +22,14 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{atomic::AtomicBool, atomic::AtomicU32, atomic::Ordering, Arc, Mutex};
 use std::thread;
 
+mod access;
 mod catalog;
 mod commands;
 mod common;
 mod datumblock;
+mod executor;
 mod guc;
+mod optimizer;
 mod parser;
 mod protocol;
 mod utility;
@@ -34,12 +37,12 @@ mod utils;
 
 use utils::SessionState;
 
-struct CancelState {
-    key: u32,
-    termreq: Arc<AtomicBool>,
+pub struct CancelState {
+    pub key: u32,
+    pub termreq: Arc<AtomicBool>,
 }
 
-type CancelMap = HashMap<u32, CancelState>;
+pub type CancelMap = HashMap<u32, CancelState>;
 
 fn insert_cancel_map(cancelmap: &Mutex<CancelMap>, sessid: u32, key: u32) -> Arc<AtomicBool> {
     let termreq: Arc<AtomicBool> = Arc::default();
@@ -113,13 +116,7 @@ fn handle_cancel_request(cancelmap: &Mutex<CancelMap>, cancel_req: protocol::Can
     log::info!("execute cancel request. done={}", done);
 }
 
-fn postgres_main(
-    cancelmap: Arc<Mutex<CancelMap>>,
-    gucstate: Arc<guc::GucState>,
-    _oid_creator: Arc<AtomicU32>,
-    mut streamv: TcpStream,
-    sessid: u32,
-) {
+fn postgres_main(global_state: GlobalState, mut streamv: TcpStream, sessid: u32) {
     let stream = &mut streamv;
     log::info!(
         "receive connection. sessid={} remote={}",
@@ -136,7 +133,7 @@ fn postgres_main(
         }
         Ok(msgdata) => match protocol::CancelRequest::deserialize(&msgdata) {
             Some(cancel_req) => {
-                handle_cancel_request(&cancelmap, cancel_req);
+                handle_cancel_request(&global_state.cancelmap, cancel_req);
                 return;
             }
             None => match protocol::handle_ssl_request(stream, msgdata) {
@@ -164,7 +161,7 @@ fn postgres_main(
     log::info!("receive startup message. msg={:?}", &startup_msg);
 
     // validate
-    let expected_client_encoding = guc::get_str(&gucstate, guc::CLIENT_ENCODING);
+    let expected_client_encoding = guc::get_str(&global_state.gucstate, guc::CLIENT_ENCODING);
     if !startup_msg.check_client_encoding(expected_client_encoding) {
         session_fatal!(
             stream,
@@ -203,42 +200,41 @@ fn postgres_main(
 
     // post-validate
     let sesskey = rand::random();
-    let termreq = insert_cancel_map(&cancelmap, sessid, sesskey);
-    let _droper = SessionDroper::new(&cancelmap, sessid);
-    let mut state = SessionState::new(sessid, reqdb, dbname, termreq, gucstate, streamv, metaconn);
+    let termreq = insert_cancel_map(&global_state.cancelmap, sessid, sesskey);
+    let _droper = SessionDroper::new(&global_state.cancelmap, sessid);
+    let mut state = SessionState::new(sessid, reqdb, dbname, termreq, metaconn, global_state);
     // post-validate for client-side
-    state.write_message(&protocol::AuthenticationOk {});
-    protocol::report_all_gucs(&state.gucstate, &mut state.cli);
-    state.write_message(&protocol::BackendKeyData::new(sessid, sesskey));
+    protocol::write_message(stream, &protocol::AuthenticationOk {});
+    protocol::report_all_gucs(&state.gucstate, stream);
+    protocol::write_message(stream, &protocol::BackendKeyData::new(sessid, sesskey));
     macro_rules! check_termreq {
         () => {
-            if state.received_termreq() {
+            if state.termreq.load(Ordering::Relaxed) {
+                session_fatal!(
+                    stream,
+                    protocol::ERRCODE_ADMIN_SHUTDOWN,
+                    "terminating connection due to administrator command"
+                );
                 return;
             }
-        };
-    }
-    macro_rules! fatal {
-        ($code: expr, $fmt: expr, $($arg:tt)*) => {
-            let ___session_fatal_errmsg = format!($fmt, $($arg)*);
-            state.fatal($code, &___session_fatal_errmsg);
-            return;
-        };
-        ($code: expr, $fmt: expr) => {
-            state.fatal($code, $fmt);
-            return;
         };
     }
 
     loop {
         check_termreq!();
-        state.write_message(&protocol::ReadyForQuery::new(protocol::XactStatus::IDLE));
-        let (msgtype, msgdata) = match state.read_message() {
+        protocol::write_message(
+            stream,
+            &protocol::ReadyForQuery::new(protocol::XactStatus::IDLE),
+        );
+        let (msgtype, msgdata) = match protocol::read_message(stream) {
             Err(err) => {
-                fatal!(
+                session_fatal!(
+                    stream,
                     protocol::ERRCODE_CONNECTION_FAILURE,
                     "read_message failed. err={}",
                     err
                 );
+                return;
             }
             Ok(v) => v,
         };
@@ -249,23 +245,27 @@ fn postgres_main(
             return;
         }
         if msgtype != protocol::MsgType::Query as i8 {
-            fatal!(
+            session_fatal!(
+                stream,
                 protocol::ERRCODE_PROTOCOL_VIOLATION,
                 "unexpected msg. expected=Q actual={}",
                 msgtype
             );
+            return;
         }
         let query = match protocol::Query::deserialize(&msgdata) {
             Err(err) => {
-                fatal!(
+                session_fatal!(
+                    stream,
                     protocol::ERRCODE_PROTOCOL_VIOLATION,
                     "unexpected query msg. err={:?}",
                     err
                 );
+                return;
             }
             Ok(query) => query,
         };
-        exec_simple_query(query.query, &mut state);
+        exec_simple_query(query.query, &mut state, stream);
         if state.dead {
             return;
         }
@@ -286,86 +286,109 @@ fn get_errcode(err: &anyhow::Error) -> &'static str {
         .map_or(protocol::ERRCODE_INTERNAL_ERROR, |v| v.0)
 }
 
-fn write_str_response(resp: &utility::StrResp, session: &mut SessionState) {
-    session.write_message(&protocol::RowDescription {
-        fields: &[protocol::FieldDesc::new(
-            &resp.name,
-            VARCHAROID.into(),
-            TypMod::none(),
-            TypLen::Var,
-        )],
-    });
-    session.write_message(&protocol::DataRow {
-        data: &[Some(&resp.val)],
-    });
+fn write_str_response(resp: &utility::StrResp, stream: &mut TcpStream) {
+    protocol::write_message(
+        stream,
+        &protocol::RowDescription {
+            fields: &[protocol::FieldDesc::new(
+                &resp.name,
+                VARCHAROID.into(),
+                TypMod::none(),
+                TypLen::Var,
+            )],
+        },
+    );
+    protocol::write_message(
+        stream,
+        &protocol::DataRow {
+            data: &[Some(resp.val.as_bytes())],
+        },
+    );
 }
 
-fn write_cmd_complete(tag: &str, session: &mut SessionState) {
-    session.write_message(&protocol::CommandComplete { tag });
+fn write_cmd_complete(tag: &str, stream: &mut TcpStream) {
+    protocol::write_message(stream, &protocol::CommandComplete { tag });
 }
 
-fn exec_utility(stmt: &parser::sem::UtilityStmt, session: &mut SessionState) {
-    let resp = match utility::process_utility(stmt, session) {
-        Ok(v) => v,
-        Err(ref err) => {
-            session.on_error(err);
-            return;
-        }
-    };
+fn exec_utility(
+    stmt: &parser::sem::UtilityStmt,
+    session: &mut SessionState,
+    stream: &mut TcpStream,
+) -> anyhow::Result<()> {
+    let resp = utility::process_utility(stmt, session)?;
     if let Some(ref strresp) = resp.resp {
-        write_str_response(strresp, session);
+        write_str_response(strresp, stream);
     }
-    write_cmd_complete(&resp.tag, session);
+    write_cmd_complete(&resp.tag, stream);
+    Ok(())
 }
 
-fn exec_simple_query(query: &str, session: &mut SessionState) {
+fn exec_optimizable(
+    stmt: &parser::sem::Query,
+    session: &mut SessionState,
+    stream: &mut TcpStream,
+) -> anyhow::Result<()> {
+    let plannedstmt = optimizer::planner(session, stmt)?;
+    let mut dest_remote = access::DestRemote::new(session, stream);
+    executor::exec_select(&plannedstmt, session, &mut dest_remote)?;
+    write_cmd_complete(format!("SELECT {}", dest_remote.processed).as_str(), stream);
+    Ok(())
+}
+
+fn exec_simple_query(query: &str, session: &mut SessionState, stream: &mut TcpStream) {
     log::info!("receive query. {}", query.replace("\n", " "));
     let ast = match parser::parse(query) {
         Ok(v) => v,
         Err(err) => {
-            session.error(
+            SessionState::error(
                 protocol::ERRCODE_SYNTAX_ERROR,
                 &format!("parse query failed. err={}", err),
+                stream,
             );
             return;
         }
     };
     log::trace!("parse query. ast={:?}", ast);
     if let parser::syn::Stmt::Empty = ast {
-        session.write_message(&protocol::EmptyQueryResponse {});
+        protocol::write_message(stream, &protocol::EmptyQueryResponse {});
         return;
     }
 
     let query = match parser::sem::kb_analyze(session, &ast) {
         Ok(v) => v,
         Err(ref err) => {
-            session.on_error(err);
+            SessionState::on_error(err, stream);
             return;
         }
     };
 
-    match query {
-        parser::sem::Stmt::Utility(ref stmt) => exec_utility(stmt, session),
-        parser::sem::Stmt::Optimizable(ref stmt) => {
-            write_str_response(
-                &utility::StrResp {
-                    name: "SELECT".to_string(),
-                    val: format!("{:#?}", stmt),
-                },
-                session,
-            );
-            write_cmd_complete("SELECT 1", session);
-        }
+    let ret = match query {
+        parser::sem::Stmt::Utility(ref stmt) => exec_utility(stmt, session, stream),
+        parser::sem::Stmt::Optimizable(ref stmt) => exec_optimizable(stmt, session, stream),
+    };
+    if let Err(ref err) = ret {
+        SessionState::on_error(err, stream);
     }
+}
+
+#[derive(Clone)]
+pub struct GlobalState {
+    pub fmgr_builtins: &'static HashMap<Oid, utils::fmgr::KBFunction>,
+    pub cancelmap: &'static Mutex<CancelMap>,
+    pub oid_creator: &'static AtomicU32,
+    pub gucstate: Arc<guc::GucState>,
 }
 
 fn main() {
     init_log();
-    let mut gucstate: Arc<guc::GucState> = Arc::default();
-    let cancelmap: Arc<Mutex<CancelMap>> = Arc::default();
-    let oid_creator: Arc<AtomicU32> = Arc::new(AtomicU32::new(std::u32::MAX));
+    let mut global_state = GlobalState {
+        fmgr_builtins: Box::leak(Box::new(utils::fmgr::get_fmgr_builtins())),
+        cancelmap: Box::leak(Box::new(Mutex::<CancelMap>::default())),
+        oid_creator: Box::leak(Box::new(AtomicU32::new(std::u32::MAX))),
+        gucstate: Arc::default(),
+    };
     let mut lastused_sessid = 20181218;
-    log::set_max_level(gucstate.loglvl);
+    log::set_max_level(global_state.gucstate.loglvl);
     let cmdline = App::new("KuiBaDB(魁拔)")
         .version(kuiba::KB_VERSTR)
         .author("盏一 <w@hidva.com>")
@@ -383,21 +406,19 @@ fn main() {
         .expect("You must specify the -D invocation option!");
     guc::load_apply_gucs(
         &format!("{}/kuiba.conf", datadir),
-        Arc::make_mut(&mut gucstate),
+        Arc::make_mut(&mut global_state.gucstate),
     )
     .unwrap();
     std::env::set_current_dir(datadir).unwrap();
-    let port = guc::get_int(&gucstate, guc::PORT) as u16;
+    let port = guc::get_int(&global_state.gucstate, guc::PORT) as u16;
     let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
     log::info!("listen. port={}", port);
     for stream in listener.incoming() {
         let stream = stream.unwrap();
-        let cancelmap = cancelmap.clone();
-        let gucstate = gucstate.clone();
-        let oid_creator = oid_creator.clone();
+        let global_state = global_state.clone();
         let sessid = new_sessid(&mut lastused_sessid);
         thread::spawn(move || {
-            postgres_main(cancelmap, gucstate, oid_creator, stream, sessid);
+            postgres_main(global_state, stream, sessid);
         });
     }
 }

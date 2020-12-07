@@ -20,7 +20,6 @@ use kuiba::{Oid, OptOid, FLOAT8OID, INT4OID, INT8OID, VARCHAROID};
 use std::convert::TryInto;
 use std::debug_assert;
 use std::mem::size_of;
-use std::rc::Rc;
 
 // 'syn is the lifetime of syntax tree returned by parser::parse().
 
@@ -30,12 +29,12 @@ pub enum UtilityStmt<'syn, 'input> {
     DefineType(&'syn syn::DefineTypeStmt<'input>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Const {
     pub consttype: Oid,
     pub consttypmod: TypMod,
     pub constlen: TypLen,
-    pub constvalue: Rc<DatumBlockSingle>,
+    pub constvalue: DatumBlockSingle,
     pub loc: syn::Location,
 }
 
@@ -44,21 +43,21 @@ impl Const {
         let (constvalue, consttype, constlen) = match &input.val {
             syn::Value::Num(v) => match v {
                 &syn::NumVal::Int(i) => (
-                    Rc::new(DatumBlockSingle::from_i32(i)),
+                    DatumBlockSingle::from_i32(i),
                     INT4OID,
                     (size_of::<i32>() as i16).into(),
                 ),
                 &syn::NumVal::Float { neg, v } => {
                     if let Ok(i) = v.parse::<i64>() {
                         (
-                            Rc::new(DatumBlockSingle::from_i64(if neg { -i } else { i })),
+                            DatumBlockSingle::from_i64(if neg { -i } else { i }),
                             INT8OID,
                             (size_of::<i64>() as i16).into(),
                         )
                     } else {
                         let v: f64 = v.parse()?;
                         (
-                            Rc::new(DatumBlockSingle::from_f64(if neg { -v } else { v })),
+                            DatumBlockSingle::from_f64(if neg { -v } else { v }),
                             FLOAT8OID,
                             (size_of::<f64>() as i16).into(),
                         )
@@ -66,7 +65,7 @@ impl Const {
                 }
             },
             syn::Value::Str(v) => (
-                Rc::new(DatumBlockSingle::new_bytes(v.as_str().as_bytes())),
+                DatumBlockSingle::new_bytes(v.as_str().as_bytes()),
                 VARCHAROID,
                 TypLen::Var,
             ),
@@ -81,7 +80,7 @@ impl Const {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FuncExpr {
     pub funcid: Oid,
     pub funcresulttype: Oid,
@@ -89,14 +88,14 @@ pub struct FuncExpr {
     pub loc: syn::Location,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Expr {
     Const(Const),
     Func(FuncExpr),
 }
 
 impl Expr {
-    fn val_type(&self) -> Oid {
+    pub fn val_type(&self) -> Oid {
         match self {
             Expr::Const(v) => v.consttype,
             Expr::Func(v) => v.funcresulttype,
@@ -104,11 +103,12 @@ impl Expr {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TargetEntry<'syn> {
     pub expr: Expr,
     pub resno: AttrNumber,
-    pub resname: &'syn str,
+    // Maybe we should use String as the type here to make the code more clear.
+    pub resname: Option<&'syn str>,
 }
 
 #[derive(Debug)]
@@ -317,7 +317,7 @@ fn transform_target_entry<'syn>(
     Ok(TargetEntry {
         resno,
         expr,
-        resname,
+        resname: Some(resname),
     })
 }
 

@@ -625,12 +625,43 @@ fn create_template0_metadata() {
         attrs_to_ddl(&KB_PROC_ATTRS)
     ))
     .unwrap();
-    // select '(' || oid::text, ''''||proname||'''', pronamespace, prokind::int, provolatile::int, pronargs, prorettype,
-    // ''''||proargtypes::text||'''', ''''||prosrc||'''', ''''||coalesce(probin,'')||'''),'
-    // from pg_proc where oid in
-    //   (select oprcode from pg_operator where ((oprleft in (16,17,20,21,23,700,701,1043) or oprleft::int = 0) and (oprright in (16,17,20,21,23,700,701,1043) or oprright::int  = 0)));
+    //   SELECT '(' || oid::text, ''''||proname||'''', pronamespace, prokind::int, provolatile::int, pronargs, prorettype, ''''||proargtypes::text||'''', ''''||prosrc||'''', ''''||coalesce(probin,'')||'''),'
+    //   FROM pg_proc
+    //   WHERE oid IN (
+    //       (SELECT oprcode
+    //       FROM pg_operator
+    //       WHERE ((oprleft IN (16,17,20,21,23,700,701,1043)
+    //               OR oprleft::int = 0)
+    //               AND (oprright IN (16,17,20,21,23,700,701,1043)
+    //               OR oprright::int = 0)))
+    //       UNION
+    //       all
+    //           (SELECT typinput
+    //           FROM pg_type
+    //           WHERE oid IN (16,17,20,21,23,700,701,1043))
+    //           UNION
+    //           all
+    //               (SELECT typoutput
+    //               FROM pg_type
+    //               WHERE oid IN (16,17,20,21,23,700,701,1043))
+    //               UNION
+    //               all
+    //                   (SELECT typmodin
+    //                   FROM pg_type
+    //                   WHERE oid IN (16,17,20,21,23,700,701,1043))
+    //                   UNION
+    //                   all
+    //                       (SELECT typmodout
+    //                       FROM pg_type
+    //                       WHERE oid IN (16,17,20,21,23,700,701,1043)) )
+    //   ORDER BY pg_proc.oid;
     conn.execute(format!(
         "insert into kb_proc values
+        (31,'byteaout',11,102,105,1,1043,'17','byteaout',''),
+        (38,'int2in',11,102,105,1,21,'1043','int2in',''),
+        (39,'int2out',11,102,105,1,1043,'21','int2out',''),
+        (42,'int4in',11,102,105,1,23,'1043','int4in',''),
+        (43,'int4out',11,102,105,1,1043,'23','int4out',''),
         (56,'boollt',11,102,105,2,16,'16 16','boollt',''),
         (57,'boolgt',11,102,105,2,16,'16 16','boolgt',''),
         (60,'booleq',11,102,105,2,16,'16 16','booleq',''),
@@ -678,6 +709,8 @@ fn create_template0_metadata() {
         (181,'int4mi',11,102,105,2,23,'23 23','int4mi',''),
         (182,'int24mi',11,102,105,2,23,'21 23','int24mi',''),
         (183,'int42mi',11,102,105,2,23,'23 21','int42mi',''),
+        (200,'float4in',11,102,105,1,700,'1043','float4in',''),
+        (201,'float4out',11,102,105,1,1043,'700','float4out',''),
         (202,'float4mul',11,102,105,2,700,'700 700','float4mul',''),
         (203,'float4div',11,102,105,2,700,'700 700','float4div',''),
         (204,'float4pl',11,102,105,2,700,'700 700','float4pl',''),
@@ -686,6 +719,8 @@ fn create_template0_metadata() {
         (207,'float4abs',11,102,105,1,700,'700','float4abs',''),
         (212,'int4um',11,102,105,1,23,'23','int4um',''),
         (213,'int2um',11,102,105,1,21,'21','int2um',''),
+        (214,'float8in',11,102,105,1,701,'1043','float8in',''),
+        (215,'float8out',11,102,105,1,1043,'701','float8out',''),
         (216,'float8mul',11,102,105,2,701,'701 701','float8mul',''),
         (217,'float8div',11,102,105,2,701,'701 701','float8div',''),
         (218,'float8pl',11,102,105,2,701,'701 701','float8pl',''),
@@ -727,6 +762,8 @@ fn create_template0_metadata() {
         (308,'float84le',11,102,105,2,16,'701 700','float84le',''),
         (309,'float84gt',11,102,105,2,16,'701 700','float84gt',''),
         (310,'float84ge',11,102,105,2,16,'701 700','float84ge',''),
+        (460,'int8in',11,102,105,1,20,'1043','int8in',''),
+        (461,'int8out',11,102,105,1,1043,'20','int8out',''),
         (462,'int8um',11,102,105,1,20,'20','int8um',''),
         (463,'int8pl',11,102,105,2,20,'20 20','int8pl',''),
         (464,'int8mi',11,102,105,2,20,'20 20','int8mi',''),
@@ -744,14 +781,27 @@ fn create_template0_metadata() {
         (477,'int84gt',11,102,105,2,16,'20 23','int84gt',''),
         (478,'int84le',11,102,105,2,16,'20 23','int84le',''),
         (479,'int84ge',11,102,105,2,16,'20 23','int84ge',''),
+        (837,'int82pl',11,102,105,2,20,'20 21','int82pl',''),
+        (838,'int82mi',11,102,105,2,20,'20 21','int82mi',''),
+        (839,'int82mul',11,102,105,2,20,'20 21','int82mul',''),
+        (840,'int82div',11,102,105,2,20,'20 21','int82div',''),
+        (841,'int28pl',11,102,105,2,20,'21 20','int28pl',''),
         (852,'int48eq',11,102,105,2,16,'23 20','int48eq',''),
         (853,'int48ne',11,102,105,2,16,'23 20','int48ne',''),
         (854,'int48lt',11,102,105,2,16,'23 20','int48lt',''),
         (855,'int48gt',11,102,105,2,16,'23 20','int48gt',''),
         (856,'int48le',11,102,105,2,16,'23 20','int48le',''),
         (857,'int48ge',11,102,105,2,16,'23 20','int48ge',''),
+        (942,'int28mi',11,102,105,2,20,'21 20','int28mi',''),
+        (943,'int28mul',11,102,105,2,20,'21 20','int28mul',''),
         (945,'int8mod',11,102,105,2,20,'20 20','int8mod',''),
+        (948,'int28div',11,102,105,2,20,'21 20','int28div',''),
+        (1046,'varcharin',11,102,105,3,1043,'1043 26 23','varcharin',''),
+        (1047,'varcharout',11,102,105,1,1043,'1043','varcharout',''),
         (1230,'int8abs',11,102,105,1,20,'20','int8abs',''),
+        (1242,'boolin',11,102,105,1,16,'1043','boolin',''),
+        (1243,'boolout',11,102,105,1,1043,'16','boolout',''),
+        (1244,'byteain',11,102,105,1,17,'1043','byteain',''),
         (1251,'int4abs',11,102,105,1,23,'23','int4abs',''),
         (1253,'int2abs',11,102,105,1,21,'21','int2abs',''),
         (1274,'int84pl',11,102,105,2,20,'20 23','int84pl',''),
@@ -762,14 +812,6 @@ fn create_template0_metadata() {
         (1279,'int48mi',11,102,105,2,20,'23 20','int48mi',''),
         (1280,'int48mul',11,102,105,2,20,'23 20','int48mul',''),
         (1281,'int48div',11,102,105,2,20,'23 20','int48div',''),
-        (837,'int82pl',11,102,105,2,20,'20 21','int82pl',''),
-        (838,'int82mi',11,102,105,2,20,'20 21','int82mi',''),
-        (839,'int82mul',11,102,105,2,20,'20 21','int82mul',''),
-        (840,'int82div',11,102,105,2,20,'20 21','int82div',''),
-        (841,'int28pl',11,102,105,2,20,'21 20','int28pl',''),
-        (942,'int28mi',11,102,105,2,20,'21 20','int28mi',''),
-        (943,'int28mul',11,102,105,2,20,'21 20','int28mul',''),
-        (948,'int28div',11,102,105,2,20,'21 20','int28div',''),
         (1691,'boolle',11,102,105,2,16,'16 16','boolle',''),
         (1692,'boolge',11,102,105,2,16,'16 16','boolge',''),
         (1850,'int28eq',11,102,105,2,16,'21 20','int28eq',''),
@@ -815,7 +857,9 @@ fn create_template0_metadata() {
         (1953,'byteane',11,102,105,2,16,'17 17','byteane',''),
         (2005,'bytealike',11,102,105,2,16,'17 17','bytealike',''),
         (2006,'byteanlike',11,102,105,2,16,'17 17','byteanlike',''),
-        (2011,'byteacat',11,102,105,2,17,'17 17','byteacat','');
+        (2011,'byteacat',11,102,105,2,17,'17 17','byteacat',''),
+        (2915,'varchartypmodin',11,102,105,1,23,'1263','varchartypmodin',''),
+        (2916,'varchartypmodout',11,102,105,1,1043,'23','varchartypmodout','');
     ",
     ))
     .unwrap();

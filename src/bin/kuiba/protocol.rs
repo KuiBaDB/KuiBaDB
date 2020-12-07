@@ -534,7 +534,7 @@ impl Message for RowDescription<'_, '_> {
 }
 
 pub struct DataRow<'a, 'b> {
-    pub data: &'b [Option<&'a str>],
+    pub data: &'b [Option<&'a [u8]>],
 }
 
 impl Message for DataRow<'_, '_> {
@@ -555,7 +555,7 @@ impl Message for DataRow<'_, '_> {
                     writer
                         .write_i32::<NetworkEndian>(dataval.len() as i32)
                         .unwrap();
-                    writer.write_all(dataval.as_bytes()).unwrap();
+                    writer.write_all(dataval).unwrap();
                 }
             }
         }

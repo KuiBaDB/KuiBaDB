@@ -10,7 +10,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-use crate::utils::{SessionState, Xid};
+use crate::utils::{SessionState, TypLen, Xid};
 use crate::{protocol, ErrCode};
 use anyhow::{anyhow, Context};
 use kuiba::{Oid, OptOid};
@@ -194,4 +194,49 @@ pub fn get_proc(state: &SessionState, oid: Oid) -> anyhow::Result<FormProc> {
         true
     })?;
     ret
+}
+
+struct FormType {
+    oid: Oid,
+    typoutput: Oid,
+    typlen: TypLen,
+    typisdefined: bool,
+}
+
+fn get_type(state: &SessionState, oid: Oid) -> anyhow::Result<FormType> {
+    let mut ret: anyhow::Result<FormType> = Err(anyhow!("lookup failed for type {}", oid));
+    state.metaconn.iterate(
+        format!(
+            "select typoutput, typisdefined, typlen from kb_type where oid = {}",
+            oid
+        ),
+        |row| {
+            ret = Ok(FormType {
+                oid: oid,
+                typoutput: column_val(row, "typoutput").unwrap().parse().unwrap(),
+                typisdefined: column_val(row, "typisdefined")
+                    .unwrap()
+                    .parse::<i32>()
+                    .unwrap()
+                    == 1,
+                typlen: column_val(row, "typlen")
+                    .unwrap()
+                    .parse::<i16>()
+                    .unwrap()
+                    .into(),
+            });
+            true
+        },
+    )?;
+    ret
+}
+
+pub fn get_type_output_info(state: &SessionState, oid: Oid) -> anyhow::Result<(Oid, TypLen)> {
+    let formtype = get_type(state, oid)?;
+    if !formtype.typisdefined {
+        Err(anyhow!("type {} is only a shell", oid))
+            .context(ErrCode(protocol::ERRCODE_UNDEFINED_OBJECT))
+    } else {
+        Ok((formtype.typoutput, formtype.typlen))
+    }
 }

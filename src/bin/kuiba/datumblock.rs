@@ -12,7 +12,7 @@
 use std::debug_assert;
 use std::mem::size_of;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DatumBlockSingle {
     data: Option<Vec<u8>>,
 }
@@ -76,6 +76,7 @@ impl DatumBlockSingle {
     }
 }
 
+#[derive(Debug)]
 pub enum DatumBlock {
     Single(DatumBlockSingle),
 }

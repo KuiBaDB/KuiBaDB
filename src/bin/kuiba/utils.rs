@@ -11,21 +11,41 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 use crate::catalog::namespace::SessionStateExt as NameSpaceSessionStateExt;
-use crate::{do_session_fatal, get_errcode, guc, protocol, TcpStream};
+use crate::{get_errcode, guc, protocol, GlobalState, TcpStream};
 use kuiba::Oid;
 use std::debug_assert;
 use std::num::NonZeroU16;
-use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc};
+use std::sync::{atomic::AtomicBool, Arc};
 
 pub mod fmgr;
 
+pub struct WorkerState {
+    pub fmgr_builtins: &'static fmgr::FmgrBuiltinsMap,
+    pub sessid: u32,
+    pub reqdb: Oid,
+    pub termreq: Arc<AtomicBool>,
+    pub gucstate: Arc<guc::GucState>,
+}
+
+impl WorkerState {
+    pub fn new(session: &SessionState) -> WorkerState {
+        WorkerState {
+            fmgr_builtins: session.fmgr_builtins,
+            sessid: session.sessid,
+            reqdb: session.reqdb,
+            termreq: session.termreq.clone(),
+            gucstate: session.gucstate.clone(),
+        }
+    }
+}
+
 pub struct SessionState {
+    pub fmgr_builtins: &'static fmgr::FmgrBuiltinsMap,
     pub sessid: u32,
     pub reqdb: Oid,
     pub db: String,
     pub termreq: Arc<AtomicBool>,
     pub gucstate: Arc<guc::GucState>,
-    pub cli: TcpStream,
     pub metaconn: sqlite::Connection,
 
     pub dead: bool,
@@ -38,56 +58,36 @@ impl SessionState {
         reqdb: Oid,
         db: String,
         termreq: Arc<AtomicBool>,
-        gucstate: Arc<guc::GucState>,
-        cli: TcpStream,
         metaconn: sqlite::Connection,
+        gstate: GlobalState,
     ) -> Self {
         Self {
             sessid,
             reqdb,
             db,
             termreq,
-            gucstate,
-            cli,
+            fmgr_builtins: gstate.fmgr_builtins,
+            gucstate: gstate.gucstate,
             metaconn,
             dead: false,
             nsstate: NameSpaceSessionStateExt::default(),
         }
     }
 
-    pub fn fatal(&mut self, code: &str, msg: &str) {
-        self.dead = true;
-        do_session_fatal(&mut self.cli, code, msg);
-    }
-
-    pub fn error(&mut self, code: &str, msg: &str) {
+    pub fn error(code: &str, msg: &str, stream: &mut TcpStream) {
         log::error!("{}", msg);
-        self.write_message(&protocol::ErrorResponse::new("ERROR", code, msg))
+        protocol::write_message(stream, &protocol::ErrorResponse::new("ERROR", code, msg))
     }
 
-    pub fn received_termreq(&mut self) -> bool {
-        if self.termreq.load(Ordering::Relaxed) {
-            self.fatal(
-                protocol::ERRCODE_ADMIN_SHUTDOWN,
-                "terminating connection due to administrator command",
-            );
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn write_message<T: protocol::Message>(&mut self, msg: &T) {
-        protocol::write_message(&mut self.cli, msg)
-    }
-
-    pub fn read_message(&mut self) -> std::io::Result<(i8, Vec<u8>)> {
-        protocol::read_message(&mut self.cli)
-    }
-
-    pub fn on_error(&mut self, err: &anyhow::Error) {
-        let errmsg = format!("{:#?}", err).replace("\n", " "); // We dont want a multi-line log.
-        self.error(get_errcode(err), &format!("session error. err={}", errmsg));
+    pub fn on_error(err: &anyhow::Error, stream: &mut TcpStream) {
+        // We dont want a multi-line log.
+        // and `{:?}` will only display the context saved in err!
+        let errmsg = format!("{:#?}", err).replace("\n", " ");
+        SessionState::error(
+            get_errcode(err),
+            &format!("session error. err={}", errmsg),
+            stream,
+        );
     }
 }
 
