@@ -28,7 +28,13 @@
 
 -   [ ] Add xact system
 
--   [ ] ...
+-   [ ] Add columnar storage
+
+-   [ ] Add Copy
+
+-   [ ] Add SeqScan
+
+-   [ ] Add Parallel SeqScan
 
 -   ~~[ ] Rewrite Greenplum based on **KuiBaDB**~~
 
