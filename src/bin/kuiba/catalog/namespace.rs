@@ -112,7 +112,7 @@ impl SessionExt for SessionState {
             return &self.nsstate.search_path;
         }
         self.nsstate.search_path.clear();
-        for nspname in guc::get_str(&self.gucstate, guc::SEARCH_PATH).split(',') {
+        for nspname in guc::get_str(&self.gucstate, guc::SearchPath).split(',') {
             if let Ok(oid) = self.get_namespace_oid(nspname) {
                 self.nsstate.search_path.push(oid);
             }

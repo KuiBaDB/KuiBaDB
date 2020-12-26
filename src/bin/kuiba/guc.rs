@@ -20,23 +20,12 @@ pub use gucdef::{GucIdx, GucVals, BOOL_GUCS, GUC_NAMEINFO_MAP, INT_GUCS, REAL_GU
 use log;
 
 #[derive(Debug, Copy, Clone)]
-#[allow(non_camel_case_types)]
 enum Context {
-    INTERNAL,
-    POSTMASTER,
-    SIGHUP,
-    SU_BACKEND,
-    BACKEND,
-    SUSET,
-    USERSET,
-}
-
-#[allow(non_camel_case_types)]
-enum Type {
-    BOOL,
-    INT,
-    REAL,
-    STR,
+    Internal,
+    KuibaDB,
+    SigHup,
+    SuSet,
+    UserSet,
 }
 
 // bit values in "flags" of a GUC variable
@@ -64,14 +53,9 @@ impl Default for GucState {
 }
 
 pub struct Generic {
-    name: &'static str,
     context: Context,
-    short_desc: &'static str,
-    long_desc: Option<&'static str>,
     flags: u32,
     show: Option<fn(&GucState) -> String>,
-
-    vartype: Type,
 }
 
 impl Generic {
@@ -80,16 +64,15 @@ impl Generic {
     }
 }
 
-pub struct Guc<T, F = T> {
+pub struct Guc<F> {
     gen: Generic,
-    boot_val: T,
     preassign: Option<fn(&mut F, &mut GucState) -> bool>,
 }
 
 pub type Bool = Guc<bool>;
 pub type Int = Guc<i32>;
 pub type Real = Guc<f64>;
-pub type Str = Guc<&'static str, String>;
+pub type Str = Guc<String>;
 
 enum GucMeta {
     B(&'static Bool),
@@ -99,7 +82,6 @@ enum GucMeta {
 }
 
 #[derive(Debug)]
-#[allow(non_camel_case_types)]
 pub enum Source {
     FILE, // kuiba.conf
     SET,  // SET command
@@ -162,8 +144,8 @@ pub fn show(gen: &Generic, gucvals: &GucState, gucidx: GucIdx) -> String {
 
 fn preassign(gucgen: &Generic, gucsrc: Source) -> bool {
     let ret = match gucsrc {
-        Source::FILE => (gucgen.context as usize) != (Context::INTERNAL as usize),
-        Source::SET => (gucgen.context as usize) >= (Context::SUSET as usize),
+        Source::FILE => (gucgen.context as usize) != (Context::Internal as usize),
+        Source::SET => (gucgen.context as usize) >= (Context::SuSet as usize),
     };
     if !ret {
         log::warn!(
@@ -282,14 +264,6 @@ pub fn load_apply_gucs(inputpath: &str, gucstate: &mut GucState) -> anyhow::Resu
 
 pub fn get_int(gucvals: &GucState, guckey: gucdef::I) -> i32 {
     gucvals.vals.int_vals[guckey as usize]
-}
-
-pub fn get_bool(gucvals: &GucState, guckey: gucdef::B) -> bool {
-    gucvals.vals.bool_vals[guckey as usize]
-}
-
-pub fn get_real(gucvals: &GucState, guckey: gucdef::R) -> f64 {
-    gucvals.vals.real_vals[guckey as usize]
 }
 
 pub fn get_str(gucvals: &GucState, guckey: gucdef::S) -> &str {

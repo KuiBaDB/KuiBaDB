@@ -22,7 +22,7 @@
 #
 #- vartype: INT
 #  name: max_connections
-#  context: SIGHUP
+#  context: SigHup
 #  short_desc: Sets the maximum number of concurrent connections.
 #  long_desc: xxxx
 #  boot_val: 16
@@ -31,17 +31,17 @@
 #  flags: xxx | yyy
 - vartype: INT
   name: max_connections
-  context: SIGHUP
+  context: SigHup
   short_desc: Sets the maximum number of concurrent connections.
   boot_val: 16
 - vartype: INT
   name: port
-  context: POSTMASTER
+  context: KuibaDB
   short_desc: Sets the TCP port the server listens on.
   boot_val: 1218
 - vartype: STR
   name: log_min_messages
-  context: SIGHUP
+  context: SigHup
   short_desc: Sets the message levels that are logged.
   long_desc: The valid values are OFF, ERROR, WARNING, INFO, DEBUG1, DEBUG2.
   boot_val: DEBUG2
@@ -49,36 +49,36 @@
   show: log_min_messages_show
 - vartype: STR
   name: server_version
-  context: INTERNAL
+  context: Internal
   short_desc: "Shows the server version."
   boot_val: "0.0.1"
   flags: REPORT
 - vartype: STR
   name: server_encoding
-  context: INTERNAL
+  context: Internal
   short_desc: Sets the server (database) character set encoding.
   boot_val: UTF8
   flags: REPORT
 - vartype: STR
   name: client_encoding
-  context: INTERNAL
+  context: Internal
   short_desc: Sets the client's character set encoding.
   boot_val: UTF8
   flags: REPORT
 - vartype: BOOL
   name: is_superuser
-  context: INTERNAL
+  context: Internal
   short_desc: Shows whether the current user is a superuser.
   boot_val: true
   flags: REPORT
 - vartype: REAL
   name: seq_page_cost
-  context: USERSET
+  context: UserSet
   short_desc: Sets the planner's estimate of the cost of a sequentially fetched disk page.
   boot_val: 1.0
 - vartype: STR
   name: search_path
-  context: USERSET
+  context: UserSet
   short_desc: Sets the schema search order for names that are not schema-qualified.
   boot_val: "public,kb_catalog"
   preassign: search_path_preassign

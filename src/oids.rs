@@ -11,12 +11,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 #[repr(u32)]
-#[allow(non_camel_case_types)]
 #[derive(Clone, Copy)]
 pub enum OidEnum {
     Template0Db = 1,
     KuiBaDb = 2,
-    KB_CATALOG_NAMESPACE = 11,
+    KBCatalogNamespace = 11,
     BOOLOID = 16,
     BoolInProc = 1242,
     BoolOutProc = 1243,
@@ -46,10 +45,10 @@ pub enum OidEnum {
     ProcedureRelationId = 1255,
     RelationRelationId = 1259,
     DatabaseRelationId = 1262,
-    KB_PUBLIC_NAMESPACE = 2200,
+    KBPublicNamespace = 2200,
     NamespaceRelationId = 2615,
     OperatorRelationId = 2617,
-    MAX_OID = 16384, // The oid of system catalogs should be less than MAX_OID.
+    MaxOid = 16384, // The oid of system catalogs should be less than MaxOid.
 }
 
 pub type Oid = std::num::NonZeroU32;

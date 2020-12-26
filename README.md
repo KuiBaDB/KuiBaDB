@@ -3,7 +3,7 @@
 
 **KuiBaDB** uses vectorization engine and is also catalog-driven. At this point, the parameter and return value type of UDF are `DatumBlock`, not `Datum`. DatumBlock is something like `Vec<Datum>`.
 
-**KuiBaDB** uses columnar storage introduced in [Hologres: A Cloud-Native Service for Hybrid Serving/Analytical Processing](https://www.hologres.io). But I removed the Delete Map and added xmin, xmax for each row, xmin/xmax is saved in row storage.
+**KuiBaDB** uses columnar storage introduced in 'Hologres: A Cloud-Native Service for Hybrid Serving/Analytical Processing'. But I removed the Delete Map and added xmin, xmax for each row, xmin/xmax is saved in row storage.
 
 **KuiBaDB** is just a toy!
 
@@ -35,6 +35,8 @@
 -   [ ] Add SeqScan
 
 -   [ ] Add Parallel SeqScan
+
+-   [ ] Add checkpointer
 
 -   ~~[ ] Rewrite Greenplum based on **KuiBaDB**~~
 

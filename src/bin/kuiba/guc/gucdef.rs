@@ -10,7 +10,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-use crate::guc::{Context::*, Type::*, *};
+use crate::guc::{Context::*, *};
 use std::collections::HashMap;
 
 include!(concat!(env!("OUT_DIR"), "/gucdef.rs"));

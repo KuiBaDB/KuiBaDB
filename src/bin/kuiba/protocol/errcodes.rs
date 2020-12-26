@@ -13,7 +13,6 @@ limitations under the License.
 pub const ERRCODE_UNDEFINED_DATABASE: &str = "3D000";
 pub const ERRCODE_CONNECTION_FAILURE: &str = "08006";
 pub const ERRCODE_PROTOCOL_VIOLATION: &str = "08P01";
-pub const ERRCODE_QUERY_CANCELED: &str = "57014";
 pub const ERRCODE_ADMIN_SHUTDOWN: &str = "57P01";
 pub const ERRCODE_SYNTAX_ERROR: &str = "42601";
 pub const ERRCODE_INTERNAL_ERROR: &str = "XX000";

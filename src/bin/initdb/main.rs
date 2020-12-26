@@ -13,7 +13,6 @@ limitations under the License.
 
 // we **do** need a better way to initdb!!!
 
-#![allow(dead_code)]
 use clap::{App, Arg};
 use kuiba::*;
 use log;
@@ -22,7 +21,6 @@ use std::vec::Vec;
 
 struct Attr {
     name: &'static str,
-    desc: &'static str,
     sqlite_type: &'static str,
 }
 
@@ -37,27 +35,27 @@ fn attrs_to_ddl(attrs: &[Attr]) -> String {
 const KB_DATABASE_ATTRS: [Attr; 5] = [
     Attr {
         name: "oid",
-        desc: "u32",
+        // "u32",
         sqlite_type: "int not null unique",
     },
     Attr {
         name: "datname",
-        desc: "varchar(127)",
+        // "varchar(127)",
         sqlite_type: "varchar(127) not null unique",
     },
     Attr {
         name: "datistemplate",
-        desc: "bool",
+        // "bool",
         sqlite_type: "int not null",
     },
     Attr {
         name: "datallowconn",
-        desc: "bool",
+        // "bool",
         sqlite_type: "int not null",
     },
     Attr {
         name: "datfrozenxid",
-        desc: "u64",
+        // "u64",
         sqlite_type: "int not null",
     },
 ];
@@ -65,37 +63,37 @@ const KB_DATABASE_ATTRS: [Attr; 5] = [
 const KB_CLASS_ATTRS: [Attr; 7] = [
     Attr {
         name: "oid",
-        desc: "u32",
+        // "u32",
         sqlite_type: "int not null unique",
     },
     Attr {
         name: "relname",
-        desc: "",
+        // "",
         sqlite_type: "varchar(127) not null",
     },
     Attr {
         name: "relnamespace",
-        desc: "oid type",
+        // "oid type",
         sqlite_type: "int not null",
     },
     Attr {
         name: "relisshared",
-        desc: "bool",
+        // "bool",
         sqlite_type: "int not null",
     },
     Attr {
         name: "relkind",
-        desc: "int1",
+        // "int1",
         sqlite_type: "int not null",
     },
     Attr {
         name: "relnattrs",
-        desc: "int2",
+        // "int2",
         sqlite_type: "int not null",
     },
     Attr {
         name: "relfrozenxid",
-        desc: "u64, null is 0",
+        // "u64, null is 0",
         sqlite_type: "int not null",
     },
 ];
@@ -103,37 +101,37 @@ const KB_CLASS_ATTRS: [Attr; 7] = [
 const KB_OPERATOR_ATTRS: [Attr; 7] = [
     Attr {
         name: "oid",
-        desc: "u32",
+        // "u32",
         sqlite_type: "int not null unique",
     },
     Attr {
         name: "oprname",
-        desc: "",
+        // "",
         sqlite_type: "varchar(127) not null ",
     },
     Attr {
         name: "oprnamespace",
-        desc: "u32 oid",
+        // "u32 oid",
         sqlite_type: "int not null ",
     },
     Attr {
         name: "oprleft",
-        desc: "oid",
+        // "oid",
         sqlite_type: "int not null ",
     },
     Attr {
         name: "oprright",
-        desc: "oid",
+        // "oid",
         sqlite_type: "int not null ",
     },
     Attr {
         name: "oprresult",
-        desc: "oid",
+        // "oid",
         sqlite_type: "int not null ",
     },
     Attr {
         name: "oprcode",
-        desc: "oid",
+        // "oid",
         sqlite_type: "int not null ",
     },
 ];
@@ -141,42 +139,42 @@ const KB_OPERATOR_ATTRS: [Attr; 7] = [
 const KB_ATTRIBUTE_ATTRS: [Attr; 8] = [
     Attr {
         name: "attrelid",
-        desc: "oid",
+        // "oid",
         sqlite_type: "int",
     },
     Attr {
         name: "attname",
-        desc: "",
+        // "",
         sqlite_type: "varchar(127)",
     },
     Attr {
         name: "atttypid",
-        desc: "oid",
+        // "oid",
         sqlite_type: "int",
     },
     Attr {
         name: "attlen",
-        desc: "int2",
+        // "int2",
         sqlite_type: "int",
     },
     Attr {
         name: "attnum",
-        desc: "int2",
+        // "int2",
         sqlite_type: "int",
     },
     Attr {
         name: "atttypmod",
-        desc: "signed int4",
+        // "signed int4",
         sqlite_type: "int",
     },
     Attr {
         name: "attnotnull",
-        desc: "bool",
+        // "bool",
         sqlite_type: "int",
     },
     Attr {
         name: "attisdropped",
-        desc: "bool",
+        // "bool",
         sqlite_type: "int",
     },
 ];
@@ -184,12 +182,12 @@ const KB_ATTRIBUTE_ATTRS: [Attr; 8] = [
 const KB_NAMESPACE_ATTRS: [Attr; 2] = [
     Attr {
         name: "oid",
-        desc: "",
+        // "",
         sqlite_type: "int not null unique",
     },
     Attr {
         name: "nspname",
-        desc: "",
+        // "",
         sqlite_type: "varchar(127) not null unique",
     },
 ];
@@ -197,52 +195,52 @@ const KB_NAMESPACE_ATTRS: [Attr; 2] = [
 const KB_PROC_ATTRS: [Attr; 10] = [
     Attr {
         name: "oid",
-        desc: "",
+        // "",
         sqlite_type: "int not null unique",
     },
     Attr {
         name: "proname",
-        desc: "",
+        // "",
         sqlite_type: "varchar(127) not null",
     },
     Attr {
         name: "pronamespace",
-        desc: "",
+        // "",
         sqlite_type: "int not null",
     },
     Attr {
         name: "prokind",
-        desc: "int1",
+        // "int1",
         sqlite_type: "int not null",
     },
     Attr {
         name: "provolatile",
-        desc: "int1",
+        // "int1",
         sqlite_type: "int not null",
     },
     Attr {
         name: "pronargs",
-        desc: "",
+        // "",
         sqlite_type: "int2 not null",
     },
     Attr {
         name: "prorettype",
-        desc: "",
+        // "",
         sqlite_type: "int not null",
     },
     Attr {
         name: "proargtypes",
-        desc: "oid oid oid",
+        // "oid oid oid",
         sqlite_type: "varchar(127) not null",
     },
     Attr {
         name: "prosrc",
-        desc: "",
+        // "",
         sqlite_type: "varchar(127) not null",
     },
     Attr {
         name: "probin",
-        desc: "empty is null",
+        // "empty is null",
         sqlite_type: "varchar(127) not null",
     },
 ];
@@ -250,47 +248,47 @@ const KB_PROC_ATTRS: [Attr; 10] = [
 const KB_TYPE_ATTRS: [Attr; 9] = [
     Attr {
         name: "oid",
-        desc: "",
+        // "",
         sqlite_type: "int not null unique",
     },
     Attr {
         name: "typname",
-        desc: "",
+        // "",
         sqlite_type: "varchar(127) not null",
     },
     Attr {
         name: "typnamespace",
-        desc: "",
+        // "",
         sqlite_type: "int not null",
     },
     Attr {
         name: "typlen",
-        desc: "int2",
+        // "int2",
         sqlite_type: "int not null",
     },
     Attr {
         name: "typisdefined",
-        desc: "bool",
+        // "bool",
         sqlite_type: "int not null",
     },
     Attr {
         name: "typinput",
-        desc: "",
+        // "",
         sqlite_type: "int not null",
     },
     Attr {
         name: "typoutput",
-        desc: "",
+        // "",
         sqlite_type: "int not null",
     },
     Attr {
         name: "typmodin",
-        desc: "",
+        // "",
         sqlite_type: "int not null",
     },
     Attr {
         name: "typmodout",
-        desc: "",
+        // "",
         sqlite_type: "int not null",
     },
 ];
@@ -325,8 +323,8 @@ fn create_template0_metadata() {
     insert into kb_namespace values({}, 'public');
     ",
         attrs_to_ddl(&KB_NAMESPACE_ATTRS),
-        KB_CATALOG_NAMESPACE as u32,
-        KB_PUBLIC_NAMESPACE as u32
+        KBCatalogNamespace as u32,
+        KBPublicNamespace as u32
     ))
     .unwrap();
 
@@ -343,25 +341,25 @@ fn create_template0_metadata() {
     ",
         attrs_to_ddl(&KB_CLASS_ATTRS),
         RelationRelationId as u32,
-        KB_CATALOG_NAMESPACE as u32,
+        KBCatalogNamespace as u32,
         KB_CLASS_ATTRS.len(),
         AttributeRelationId as u32,
-        KB_CATALOG_NAMESPACE as u32,
+        KBCatalogNamespace as u32,
         KB_ATTRIBUTE_ATTRS.len(),
         OperatorRelationId as u32,
-        KB_CATALOG_NAMESPACE as u32,
+        KBCatalogNamespace as u32,
         KB_OPERATOR_ATTRS.len(),
         DatabaseRelationId as u32,
-        KB_CATALOG_NAMESPACE as u32,
+        KBCatalogNamespace as u32,
         KB_DATABASE_ATTRS.len(),
         NamespaceRelationId as u32,
-        KB_CATALOG_NAMESPACE as u32,
+        KBCatalogNamespace as u32,
         KB_NAMESPACE_ATTRS.len(),
         ProcedureRelationId as u32,
-        KB_CATALOG_NAMESPACE as u32,
+        KBCatalogNamespace as u32,
         KB_PROC_ATTRS.len(),
         TypeRelationId as u32,
-        KB_CATALOG_NAMESPACE as u32,
+        KBCatalogNamespace as u32,
         KB_TYPE_ATTRS.len(),
     ))
     .unwrap();
@@ -385,35 +383,35 @@ fn create_template0_metadata() {
     ({}, 'varchar', {}, -1, 1, {}, {}, 0, 0);
     ",
         BOOLOID as u32,
-        KB_CATALOG_NAMESPACE as u32,
+        KBCatalogNamespace as u32,
         BoolInProc as u32,
         BoolOutProc as u32,
         BYTEAOID as u32,
-        KB_CATALOG_NAMESPACE as u32,
+        KBCatalogNamespace as u32,
         ByteaInProc as u32,
         ByteaOutProc as u32,
         INT8OID as u32,
-        KB_CATALOG_NAMESPACE as u32,
+        KBCatalogNamespace as u32,
         Int8InProc as u32,
         Int8OutProc as u32,
         INT2OID as u32,
-        KB_CATALOG_NAMESPACE as u32,
+        KBCatalogNamespace as u32,
         Int2InProc as u32,
         Int2OutProc as u32,
         INT4OID as u32,
-        KB_CATALOG_NAMESPACE as u32,
+        KBCatalogNamespace as u32,
         Int4InProc as u32,
         Int4OutProc as u32,
         FLOAT4OID as u32,
-        KB_CATALOG_NAMESPACE as u32,
+        KBCatalogNamespace as u32,
         Float4InProc as u32,
         Float4OutProc as u32,
         FLOAT8OID as u32,
-        KB_CATALOG_NAMESPACE as u32,
+        KBCatalogNamespace as u32,
         Float8InProc as u32,
         Float8OutProc as u32,
         VARCHAROID as u32,
-        KB_CATALOG_NAMESPACE as u32,
+        KBCatalogNamespace as u32,
         VarcharInProc as u32,
         VarcharOutProc as u32,
     ))

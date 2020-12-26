@@ -197,7 +197,6 @@ pub fn get_proc(state: &SessionState, oid: Oid) -> anyhow::Result<FormProc> {
 }
 
 struct FormType {
-    oid: Oid,
     typoutput: Oid,
     typlen: TypLen,
     typisdefined: bool,
@@ -212,7 +211,6 @@ fn get_type(state: &SessionState, oid: Oid) -> anyhow::Result<FormType> {
         ),
         |row| {
             ret = Ok(FormType {
-                oid: oid,
                 typoutput: column_val(row, "typoutput").unwrap().parse().unwrap(),
                 typisdefined: column_val(row, "typisdefined")
                     .unwrap()

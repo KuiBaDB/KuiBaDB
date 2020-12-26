@@ -62,13 +62,13 @@ generic_set: syn::VariableSetStmt<'input> = {
     }
 }
 
-var_value: syn::A_Const<'input> = {
-    <s:@L> <v:opt_boolean_or_string> <e:@R> => syn::A_Const {
+var_value: syn::AConst<'input> = {
+    <s:@L> <v:opt_boolean_or_string> <e:@R> => syn::AConst {
         val: syn::Value::Str(v),
         loc: syn::Location {s, e}
     },
 
-    <s:@L> <v:NumericOnly> <e:@R> => syn::A_Const {
+    <s:@L> <v:NumericOnly> <e:@R> => syn::AConst {
         val: syn::Value::Num(v),
         loc: syn::Location {s, e},
     },
@@ -185,8 +185,8 @@ DefineTypeStmt: syn::DefineTypeStmt<'input> = {
 // replace with: a_expr: Box<syn::Expr<'input>> ??
 // RustPython/python.lalrpop use Expression instead of Box<Expression>.
 a_expr: syn::Expr<'input> = {
-    <s:@L> <l:a_expr> <o:a_expr_lvl0_op> <r:a_expr_lvl1> <e:@R> => syn::Expr::A_Expr(syn::A_Expr{
-        kind: syn::A_Expr_Kind::AEXPR_OP,
+    <s:@L> <l:a_expr> <o:a_expr_lvl0_op> <r:a_expr_lvl1> <e:@R> => syn::Expr::AExpr(syn::AExpr{
+        kind: syn::AExprKind::Op,
         name: vec![syn::StrVal::InPlace(o)],
         oprands: Box::new(syn::AExprOprands::Two(l, r)),
         loc: syn::Location{s, e},
@@ -200,8 +200,8 @@ a_expr_lvl0_op: &'input str = {
 };
 
 a_expr_lvl1: syn::Expr<'input> = {
-    <s:@L> <l:a_expr_lvl1> <o:a_expr_lvl1_op> <r:a_expr_lvl2> <e:@R> => syn::Expr::A_Expr(syn::A_Expr{
-        kind: syn::A_Expr_Kind::AEXPR_OP,
+    <s:@L> <l:a_expr_lvl1> <o:a_expr_lvl1_op> <r:a_expr_lvl2> <e:@R> => syn::Expr::AExpr(syn::AExpr{
+        kind: syn::AExprKind::Op,
         name: vec![syn::StrVal::InPlace(o)],
         oprands: Box::new(syn::AExprOprands::Two(l, r)),
         loc: syn::Location{s, e},
@@ -216,8 +216,8 @@ a_expr_lvl1_op: &'input str = {
 };
 
 a_expr_lvl2: syn::Expr<'input> = {
-    <s:@L> <o:a_expr_lvl2_unary_op> <r:a_expr_lvl2> <e:@R> => syn::Expr::A_Expr(syn::A_Expr{
-        kind: syn::A_Expr_Kind::AEXPR_OP,
+    <s:@L> <o:a_expr_lvl2_unary_op> <r:a_expr_lvl2> <e:@R> => syn::Expr::AExpr(syn::AExpr{
+        kind: syn::AExprKind::Op,
         name: vec![syn::StrVal::InPlace(o)],
         oprands: Box::new(syn::AExprOprands::One(r)),
         loc: syn::Location{s, e},
@@ -237,11 +237,11 @@ c_expr: syn::Expr<'input> = {
 }
 
 AexprConst: syn::Expr<'input> = {
-    <s:@L> <x:I_or_F_const> <e:@R> => syn::Expr::A_Const(syn::A_Const {
+    <s:@L> <x:I_or_F_const> <e:@R> => syn::Expr::AConst(syn::AConst {
         val: syn::Value::Num(x),
         loc: syn::Location {s, e}
     }),
-    <s:@L> <x:Sconst> <e:@R> => syn::Expr::A_Const(syn::A_Const {
+    <s:@L> <x:Sconst> <e:@R> => syn::Expr::AConst(syn::AConst {
         val: syn::Value::Str(x),
         loc: syn::Location {s, e}
     }),

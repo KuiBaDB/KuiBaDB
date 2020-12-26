@@ -39,15 +39,6 @@ pub struct PlannedStmt<'syn> {
     pub plan_tree: Plan<'syn>,
 }
 
-struct PlannerGlobal {}
-
-struct PlannerInfo<'syn, 'sem, 'opt> {
-    parse: &'sem sem::Query<'syn>,
-    glob: &'opt PlannerGlobal,
-    query_level: u32,
-    parent_root: Option<&'opt PlannerInfo<'syn, 'sem, 'opt>>,
-}
-
 pub fn planner<'syn>(
     _state: &mut SessionState,
     parse: &sem::Query<'syn>,

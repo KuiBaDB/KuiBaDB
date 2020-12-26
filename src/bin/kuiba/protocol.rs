@@ -189,26 +189,25 @@ impl StartupMessage<'_> {
 
 // See https://www.postgresql.org/docs/devel/protocol-error-fields.html for details.
 #[derive(Default)]
-#[allow(non_snake_case)]
 pub struct ErrFields<'a> {
-    pub S: Option<&'a str>,
-    pub V: Option<&'a str>,
-    pub C: Option<&'a str>,
-    pub M: Option<&'a str>,
-    pub D: Option<&'a str>,
-    pub H: Option<&'a str>,
-    pub P: Option<&'a str>,
-    pub p: Option<&'a str>,
-    pub q: Option<&'a str>,
-    pub W: Option<&'a str>,
-    pub s: Option<&'a str>,
-    pub t: Option<&'a str>,
-    pub c: Option<&'a str>,
-    pub d: Option<&'a str>,
-    pub n: Option<&'a str>,
-    pub F: Option<&'a str>,
-    pub L: Option<&'a str>,
-    pub R: Option<&'a str>,
+    pub severity: Option<&'a str>,
+    pub code: Option<&'a str>,
+    pub msg: Option<&'a str>,
+    // pub V: Option<&'a str>,
+    // pub D: Option<&'a str>,
+    // pub H: Option<&'a str>,
+    // pub P: Option<&'a str>,
+    // pub p: Option<&'a str>,
+    // pub q: Option<&'a str>,
+    // pub W: Option<&'a str>,
+    // pub s: Option<&'a str>,
+    // pub t: Option<&'a str>,
+    // pub c: Option<&'a str>,
+    // pub d: Option<&'a str>,
+    // pub n: Option<&'a str>,
+    // pub F: Option<&'a str>,
+    // pub L: Option<&'a str>,
+    // pub R: Option<&'a str>,
 }
 
 fn serialize_errmsg(typ: u8, fields: &ErrFields) -> Vec<u8> {
@@ -222,24 +221,24 @@ fn serialize_errmsg(typ: u8, fields: &ErrFields) -> Vec<u8> {
             }
         };
     }
-    write_field!(S, 'S');
-    write_field!(V, 'V');
-    write_field!(C, 'C');
-    write_field!(M, 'M');
-    write_field!(D, 'D');
-    write_field!(H, 'H');
-    write_field!(P, 'P');
-    write_field!(p, 'p');
-    write_field!(q, 'q');
-    write_field!(W, 'W');
-    write_field!(s, 's');
-    write_field!(t, 't');
-    write_field!(c, 'c');
-    write_field!(d, 'd');
-    write_field!(n, 'n');
-    write_field!(F, 'F');
-    write_field!(L, 'L');
-    write_field!(R, 'R');
+    write_field!(severity, 'S');
+    write_field!(code, 'C');
+    write_field!(msg, 'M');
+    // write_field!(V, 'V');
+    // write_field!(D, 'D');
+    // write_field!(H, 'H');
+    // write_field!(P, 'P');
+    // write_field!(p, 'p');
+    // write_field!(q, 'q');
+    // write_field!(W, 'W');
+    // write_field!(s, 's');
+    // write_field!(t, 't');
+    // write_field!(c, 'c');
+    // write_field!(d, 'd');
+    // write_field!(n, 'n');
+    // write_field!(F, 'F');
+    // write_field!(L, 'L');
+    // write_field!(R, 'R');
     writer.write_u8(0).unwrap();
     let msglen = writer.position() - 1;
     writer.seek(SeekFrom::Start(0)).unwrap();
@@ -260,9 +259,9 @@ impl<'a> ErrorResponse<'a> {
     ) -> ErrorResponse<'a> {
         ErrorResponse {
             fields: ErrFields {
-                S: Some(severity),
-                C: Some(code),
-                M: Some(msg),
+                severity: Some(severity),
+                code: Some(code),
+                msg: Some(msg),
                 ..ErrFields::default()
             },
         }
@@ -272,34 +271,6 @@ impl<'a> ErrorResponse<'a> {
 impl<'a> Message for ErrorResponse<'a> {
     fn serialize(&self) -> Vec<u8> {
         serialize_errmsg('E' as u8, &self.fields)
-    }
-}
-
-// use constant generic to refactor NoticeResponse and ErrorResponse
-pub struct NoticeResponse<'a> {
-    pub fields: ErrFields<'a>,
-}
-
-impl<'a> NoticeResponse<'a> {
-    pub fn new<'b: 'a, 'c: 'a, 'd: 'a>(
-        severity: &'b str,
-        code: &'c str,
-        msg: &'d str,
-    ) -> NoticeResponse<'a> {
-        NoticeResponse {
-            fields: ErrFields {
-                S: Some(severity),
-                C: Some(code),
-                M: Some(msg),
-                ..ErrFields::default()
-            },
-        }
-    }
-}
-
-impl Message for NoticeResponse<'_> {
-    fn serialize(&self) -> Vec<u8> {
-        serialize_errmsg('N' as u8, &self.fields)
     }
 }
 
@@ -341,8 +312,6 @@ impl Message for BackendKeyData {
 #[derive(Copy, Clone)]
 pub enum XactStatus {
     IDLE = 'I' as u8,
-    INXACT = 'T' as u8,
-    FAILED = 'F' as u8,
 }
 
 pub struct ReadyForQuery {

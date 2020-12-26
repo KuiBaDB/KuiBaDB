@@ -39,7 +39,7 @@ pub struct Const {
 }
 
 impl Const {
-    fn try_new(input: &syn::A_Const) -> anyhow::Result<Self> {
+    fn try_new(input: &syn::AConst) -> anyhow::Result<Self> {
         let (constvalue, consttype, constlen) = match &input.val {
             syn::Value::Num(v) => match v {
                 &syn::NumVal::Int(i) => (
@@ -114,9 +114,6 @@ pub struct TargetEntry<'syn> {
 #[derive(Debug)]
 pub enum CmdType {
     Select,
-    Update,
-    Insert,
-    Delete,
 }
 
 #[derive(Debug)]
@@ -136,50 +133,10 @@ struct ParseState<'a> {
     p_next_resno: AttrNumber,
 }
 
-#[allow(non_camel_case_types)]
 #[derive(PartialEq, Clone, Copy)]
 enum ParseExprKind {
-    NONE = 0,
-    OTHER,
-    JOIN_ON,
-    JOIN_USING,
-    FROM_SUBSELECT,
-    FROM_FUNCTION,
-    WHERE,
-    HAVING,
-    FILTER,
-    WINDOW_PARTITION,
-    WINDOW_ORDER,
-    WINDOW_FRAME_RANGE,
-    WINDOW_FRAME_ROWS,
-    WINDOW_FRAME_GROUPS,
-    SELECT_TARGET,
-    INSERT_TARGET,
-    UPDATE_SOURCE,
-    UPDATE_TARGET,
-    GROUP_BY,
-    ORDER_BY,
-    DISTINCT_ON,
-    LIMIT,
-    OFFSET,
-    RETURNING,
-    VALUES,
-    VALUES_SINGLE,
-    CHECK_CONSTRAINT,
-    DOMAIN_CHECK,
-    COLUMN_DEFAULT,
-    FUNCTION_DEFAULT,
-    INDEX_EXPRESSION,
-    INDEX_PREDICATE,
-    ALTER_COL_TRANSFORM,
-    EXECUTE_PARAMETER,
-    TRIGGER_WHEN,
-    POLICY,
-    PARTITION_BOUND,
-    PARTITION_EXPRESSION,
-    CALL_ARGUMENT,
-    COPY_WHERE,
-    GENERATED_COLUMN,
+    None = 0,
+    SelectTarget,
 }
 
 fn binary_oper_exact(
@@ -248,7 +205,7 @@ fn make_op(
     })
 }
 
-fn transform_a_expr_op(pstate: &mut ParseState, expr: &syn::A_Expr) -> anyhow::Result<FuncExpr> {
+fn transform_a_expr_op(pstate: &mut ParseState, expr: &syn::AExpr) -> anyhow::Result<FuncExpr> {
     match *expr.oprands {
         syn::AExprOprands::One(ref e) => {
             let e = transform_expr_recurse(pstate, e)?;
@@ -264,8 +221,8 @@ fn transform_a_expr_op(pstate: &mut ParseState, expr: &syn::A_Expr) -> anyhow::R
 
 fn transform_expr_recurse(pstate: &mut ParseState, expr: &syn::Expr) -> anyhow::Result<Expr> {
     match expr {
-        syn::Expr::A_Const(v) => Const::try_new(v).map(|v| Expr::Const(v)),
-        syn::Expr::A_Expr(v) => transform_a_expr_op(pstate, v).map(|v| Expr::Func(v)),
+        syn::Expr::AConst(v) => Const::try_new(v).map(|v| Expr::Const(v)),
+        syn::Expr::AExpr(v) => transform_a_expr_op(pstate, v).map(|v| Expr::Func(v)),
     }
 }
 
@@ -274,7 +231,7 @@ fn transform_expr(
     expr: &syn::Expr,
     ekind: ParseExprKind,
 ) -> anyhow::Result<Expr> {
-    debug_assert!(ekind != ParseExprKind::NONE);
+    debug_assert!(ekind != ParseExprKind::None);
     let sv_expr_kind = pstate.p_expr_kind;
     pstate.p_expr_kind = ekind;
     let ret = transform_expr_recurse(pstate, expr);
@@ -282,22 +239,8 @@ fn transform_expr(
     ret
 }
 
-enum FigureRet<'syn> {
-    None,
-    SecondBest(&'syn str),
-    Good(&'syn str),
-}
-
-// str returned by this function should be not used if kind is None.
-fn figure_colname_internal<'syn>(_node: &'syn syn::Expr) -> FigureRet<'syn> {
-    FigureRet::None
-}
-
-fn figure_colname<'syn>(node: &'syn syn::Expr) -> &'syn str {
-    match figure_colname_internal(node) {
-        FigureRet::None => "?column?",
-        FigureRet::Good(v) | FigureRet::SecondBest(v) => v,
-    }
+fn figure_colname<'syn>(_node: &'syn syn::Expr) -> &'syn str {
+    "?column?"
 }
 
 // transformTargetEntry
@@ -344,7 +287,7 @@ fn transform_select_stmt<'syn, 'input>(
     pstate: &mut ParseState,
     stmt: &'syn syn::SelectStmt<'input>,
 ) -> anyhow::Result<Query<'syn>> {
-    let tlist = transform_target_list(pstate, &stmt.tlist, ParseExprKind::SELECT_TARGET)?;
+    let tlist = transform_target_list(pstate, &stmt.tlist, ParseExprKind::SelectTarget)?;
     Ok(Query {
         cmdtype: CmdType::Select,
         tlist,
@@ -363,7 +306,7 @@ pub fn kb_analyze<'syn, 'input>(
         syn::Stmt::Select(v) => {
             let mut pstate = ParseState {
                 sess_state: state,
-                p_expr_kind: ParseExprKind::NONE,
+                p_expr_kind: ParseExprKind::None,
                 p_next_resno: 1.try_into().unwrap(),
             };
             transform_select_stmt(&mut pstate, v).map(|v| Stmt::Optimizable(v))

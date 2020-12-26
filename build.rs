@@ -10,7 +10,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-#![allow(dead_code)]
 use lalrpop;
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote, ToTokens};
@@ -43,6 +42,10 @@ struct Gucs {
     real_gucs: Vec<Guc>,
 }
 
+fn yaml_tostr(input: &Yaml) -> String {
+    common::yaml_try_tostr(input).unwrap()
+}
+
 impl Guc {
     fn new(val: &Yaml) -> Guc {
         Guc {
@@ -50,7 +53,7 @@ impl Guc {
             context: val["context"].as_str().unwrap().to_string(),
             short_desc: val["short_desc"].as_str().unwrap().to_string(),
             vartype: val["vartype"].as_str().unwrap().to_string(),
-            boot_val: common::yaml_tostr(&val["boot_val"]),
+            boot_val: yaml_tostr(&val["boot_val"]),
             flags: val["flags"].as_str().or(Some("0")).unwrap().to_string(),
             long_desc: val["long_desc"].as_str().map(|v| v.to_string()),
             preassign: val["preassign"].as_str().map(|v| v.to_string()),
@@ -98,6 +101,57 @@ struct FormatRet {
     boot_val: Vec<TokenStream>,
 }
 
+fn char_has_case(c: char) -> bool {
+    c.is_lowercase() || c.is_uppercase()
+}
+
+fn to_camel_case(s: &str) -> String {
+    s.trim_matches('_')
+        .split('_')
+        .filter(|component| !component.is_empty())
+        .map(|component| {
+            let mut camel_cased_component = String::new();
+
+            let mut new_word = true;
+            let mut prev_is_lower_case = true;
+
+            for c in component.chars() {
+                // Preserve the case if an uppercase letter follows a lowercase letter, so that
+                // `camelCase` is converted to `CamelCase`.
+                if prev_is_lower_case && c.is_uppercase() {
+                    new_word = true;
+                }
+
+                if new_word {
+                    camel_cased_component.extend(c.to_uppercase());
+                } else {
+                    camel_cased_component.extend(c.to_lowercase());
+                }
+
+                prev_is_lower_case = c.is_lowercase();
+                new_word = false;
+            }
+
+            camel_cased_component
+        })
+        .fold(
+            (String::new(), None),
+            |(acc, prev): (String, Option<String>), next| {
+                // separate two components with an underscore if their boundary cannot
+                // be distinguished using a uppercase/lowercase case distinction
+                let join = if let Some(prev) = prev {
+                    let l = prev.chars().last().unwrap();
+                    let f = next.chars().next().unwrap();
+                    !char_has_case(l) && !char_has_case(f)
+                } else {
+                    false
+                };
+                (acc + if join { "_" } else { "" } + &next, Some(next))
+            },
+        )
+        .0
+}
+
 // var_logical_type is the logical type of guc, such as Str, Int,
 fn format_gucs(f: &mut File, var_logical_type: &'static str, gucs: &Vec<Guc>) -> FormatRet {
     let mut name = Vec::<TokenStream>::new();
@@ -124,7 +178,7 @@ fn format_gucs(f: &mut File, var_logical_type: &'static str, gucs: &Vec<Guc>) ->
         long_desc.push(option_tokenstream(&guc.long_desc, true));
         preassign.push(option_tokenstream(&guc.preassign, false));
         show.push(option_tokenstream(&guc.show, false));
-        enumitem.push(guc.name.to_ascii_uppercase().parse().unwrap());
+        enumitem.push(to_camel_case(&guc.name).parse().unwrap());
     }
 
     let const_type = format_ident!("{}", var_logical_type);
@@ -135,15 +189,10 @@ fn format_gucs(f: &mut File, var_logical_type: &'static str, gucs: &Vec<Guc>) ->
         #(
             #const_type {
                 gen: Generic {
-                    name: #name,
                     context: #context,
-                    short_desc: #short_desc,
-                    long_desc: #long_desc,
                     flags: #flags,
                     show: #show,
-                    vartype: #vartype,
                 },
-                boot_val: #boot_val,
                 preassign: #preassign,
             }
         ),*
@@ -164,11 +213,9 @@ fn format_gucs(f: &mut File, var_logical_type: &'static str, gucs: &Vec<Guc>) ->
         f,
         "{}",
         quote! {
-            #[allow(non_camel_case_types)]
             #[derive(Copy, Clone)]
             pub enum #enum_ident {
                 #(#enumitem,)*
-                TOTAL_NUM,
             }
         }
     )

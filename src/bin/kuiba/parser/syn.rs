@@ -62,8 +62,7 @@ pub struct Location {
 }
 
 #[derive(Debug)]
-#[allow(non_camel_case_types)]
-pub struct A_Const<'input> {
+pub struct AConst<'input> {
     pub val: Value<'input>,
     pub loc: Location,
 }
@@ -71,7 +70,7 @@ pub struct A_Const<'input> {
 #[derive(Debug)]
 pub struct VariableSetStmt<'input> {
     pub name: StrVal<'input>,
-    pub val: A_Const<'input>,
+    pub val: AConst<'input>,
 }
 
 #[derive(Debug)]
@@ -89,22 +88,7 @@ pub enum Stmt<'input> {
 }
 
 #[derive(Debug)]
-pub enum DefElemVal<'input> {
-    Val(Value<'input>),
-}
-
-#[derive(Debug)]
 pub struct DefElemAdd<'input> {
-    defnamespace: StrVal<'input>,
-    defname: StrVal<'input>,
-    arg: DefElemVal<'input>,
-}
-
-pub struct DefElemSet<'input> {
-    elem: DefElemAdd<'input>,
-}
-
-pub struct DefElemDrop<'input> {
     defnamespace: StrVal<'input>,
     defname: StrVal<'input>,
 }
@@ -115,31 +99,15 @@ pub struct DefineTypeStmt<'input> {
     pub definition: Option<Vec<DefElemAdd<'input>>>,
 }
 
-#[allow(non_camel_case_types)]
 #[derive(Debug)]
 pub enum Expr<'input> {
-    A_Const(A_Const<'input>),
-    A_Expr(A_Expr<'input>),
+    AConst(AConst<'input>),
+    AExpr(AExpr<'input>),
 }
 
-#[allow(non_camel_case_types)]
 #[derive(Debug)]
-pub enum A_Expr_Kind {
-    AEXPR_OP,
-    AEXPR_OP_ANY,
-    AEXPR_OP_ALL,
-    AEXPR_DISTINCT,
-    AEXPR_NOT_DISTINCT,
-    AEXPR_NULLIF,
-    AEXPR_IN,
-    AEXPR_LIKE,
-    AEXPR_ILIKE,
-    AEXPR_SIMILAR,
-    AEXPR_BETWEEN,
-    AEXPR_NOT_BETWEEN,
-    AEXPR_BETWEEN_SYM,
-    AEXPR_NOT_BETWEEN_SYM,
-    AEXPR_PAREN,
+pub enum AExprKind {
+    Op,
 }
 
 #[derive(Debug)]
@@ -148,10 +116,9 @@ pub enum AExprOprands<'input> {
     Two(Expr<'input>, Expr<'input>),
 }
 
-#[allow(non_camel_case_types)]
 #[derive(Debug)]
-pub struct A_Expr<'input> {
-    pub kind: A_Expr_Kind,
+pub struct AExpr<'input> {
+    pub kind: AExprKind,
     pub name: Vec<StrVal<'input>>,
     pub oprands: Box<AExprOprands<'input>>,
     pub loc: Location,

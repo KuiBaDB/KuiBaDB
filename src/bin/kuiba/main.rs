@@ -10,7 +10,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-#![allow(dead_code)]
 use crate::utils::{AttrNumber, TypLen, TypMod};
 use anyhow;
 use clap::{App, Arg};
@@ -161,7 +160,7 @@ fn postgres_main(global_state: GlobalState, mut streamv: TcpStream, sessid: u32)
     log::info!("receive startup message. msg={:?}", &startup_msg);
 
     // validate
-    let expected_client_encoding = guc::get_str(&global_state.gucstate, guc::CLIENT_ENCODING);
+    let expected_client_encoding = guc::get_str(&global_state.gucstate, guc::ClientEncoding);
     if !startup_msg.check_client_encoding(expected_client_encoding) {
         session_fatal!(
             stream,
@@ -410,7 +409,7 @@ fn main() {
     )
     .unwrap();
     std::env::set_current_dir(datadir).unwrap();
-    let port = guc::get_int(&global_state.gucstate, guc::PORT) as u16;
+    let port = guc::get_int(&global_state.gucstate, guc::Port) as u16;
     let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
     log::info!("listen. port={}", port);
     for stream in listener.incoming() {

@@ -15,7 +15,6 @@ use crate::optimizer::PlannedStmt;
 use crate::parser::sem;
 use crate::utils::fmgr::{get_fn_addr, FmgrInfo};
 use crate::utils::{SessionState, WorkerState};
-use anyhow::anyhow;
 use std::rc::Rc;
 
 pub trait DestReceiver {
@@ -29,20 +28,12 @@ pub trait DestReceiver {
 //
 // NO! f(x: Option<&i32>) will also use the stack to pass x!
 struct ExprContext<'exe> {
-    ecxt_scantuple: Option<&'exe Vec<Rc<DatumBlock>>>,
-    ecxt_innertuple: Option<&'exe Vec<Rc<DatumBlock>>>,
-    ecxt_outertuple: Option<&'exe Vec<Rc<DatumBlock>>>,
     state: &'exe WorkerState,
 }
 
 impl<'exe> ExprContext<'exe> {
     fn new(state: &'exe WorkerState) -> ExprContext<'exe> {
-        Self {
-            ecxt_scantuple: None,
-            ecxt_innertuple: None,
-            ecxt_outertuple: None,
-            state,
-        }
+        Self { state }
     }
 }
 
@@ -140,11 +131,7 @@ impl ProjectionInfo {
 struct ResultState<'exe> {
     state: &'exe WorkerState,
     proj_info: ProjectionInfo,
-    resconstantqual: Option<ExprState>,
     rs_done: bool,
-    rs_checkqual: bool,
-    lefttree: Option<Box<PlanState<'exe>>>,
-    qual: Vec<ExprState>,
 }
 
 impl ResultState<'_> {
@@ -179,14 +166,7 @@ fn exec_init_result<'syn, 'opt, 'exe>(
     Ok(ResultState {
         state,
         proj_info: ProjectionInfo::try_new(&node.tlist, state)?,
-        resconstantqual: None,
         rs_done: false,
-        rs_checkqual: false,
-        lefttree: match node.lefttree {
-            None => None,
-            Some(ref v) => exec_init_plan(&v, state).map(|v| Some(Box::new(v)))?,
-        },
-        qual: Vec::new(),
     })
 }
 
@@ -214,8 +194,4 @@ pub fn exec_select(
         }
     }
     Ok(())
-}
-
-pub fn exec_iud(_stmt: &PlannedStmt, _session: &SessionState) -> anyhow::Result<u64> {
-    Err(anyhow!("Biu"))
 }
