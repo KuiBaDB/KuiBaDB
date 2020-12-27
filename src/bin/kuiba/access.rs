@@ -20,6 +20,9 @@ use std::debug_assert;
 use std::net::TcpStream;
 use std::rc::Rc;
 
+pub mod clog;
+mod slru;
+
 pub struct DestRemote<'sess> {
     session: &'sess SessionState,
     stream: &'sess mut TcpStream,

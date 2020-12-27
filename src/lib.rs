@@ -18,6 +18,7 @@ pub const KB_PATCH: i32 = 1;
 pub const KB_VER: i32 = KB_MAJOR * 100 * 100 + KB_MINOR * 100 + KB_PATCH;
 // change the server_version in gucdef.yaml and Cargo.toml TOO!
 pub const KB_VERSTR: &str = "0.0.1";
+pub const KB_BLCKSZ: usize = 8192;
 
 pub fn init_log() {
     stderrlog::new()

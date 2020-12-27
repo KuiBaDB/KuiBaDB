@@ -19,7 +19,7 @@ pub use gucdef::S::*;
 pub use gucdef::{GucIdx, GucVals, BOOL_GUCS, GUC_NAMEINFO_MAP, INT_GUCS, REAL_GUCS, STR_GUCS};
 use log;
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd)]
 enum Context {
     Internal,
     KuibaDB,
@@ -144,8 +144,8 @@ pub fn show(gen: &Generic, gucvals: &GucState, gucidx: GucIdx) -> String {
 
 fn preassign(gucgen: &Generic, gucsrc: Source) -> bool {
     let ret = match gucsrc {
-        Source::FILE => (gucgen.context as usize) != (Context::Internal as usize),
-        Source::SET => (gucgen.context as usize) >= (Context::SuSet as usize),
+        Source::FILE => gucgen.context != Context::Internal,
+        Source::SET => gucgen.context >= Context::SuSet,
     };
     if !ret {
         log::warn!(

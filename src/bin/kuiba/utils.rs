@@ -10,6 +10,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+use crate::access::clog;
 use crate::catalog::namespace::SessionStateExt as NameSpaceSessionStateExt;
 use crate::{get_errcode, guc, protocol, GlobalState, TcpStream};
 use kuiba::Oid;
@@ -20,6 +21,7 @@ use std::sync::{atomic::AtomicBool, Arc};
 pub mod fmgr;
 
 pub struct WorkerState {
+    pub clog: clog::WorkerStateExt,
     pub fmgr_builtins: &'static fmgr::FmgrBuiltinsMap,
     pub sessid: u32,
     pub reqdb: Oid,
@@ -35,11 +37,13 @@ impl WorkerState {
             reqdb: session.reqdb,
             termreq: session.termreq.clone(),
             gucstate: session.gucstate.clone(),
+            clog: session.clog,
         }
     }
 }
 
 pub struct SessionState {
+    pub clog: clog::WorkerStateExt,
     pub fmgr_builtins: &'static fmgr::FmgrBuiltinsMap,
     pub sessid: u32,
     pub reqdb: Oid,
@@ -71,6 +75,7 @@ impl SessionState {
             metaconn,
             dead: false,
             nsstate: NameSpaceSessionStateExt::default(),
+            clog: clog::WorkerStateExt::new(gstate.clog),
         }
     }
 
@@ -149,5 +154,4 @@ impl std::convert::From<TypMod> for i32 {
 }
 
 pub type AttrNumber = NonZeroU16;
-// type Xid = std::num::NonZeroU64;
-pub type Xid = u64;
+pub type Xid = std::num::NonZeroU64;
