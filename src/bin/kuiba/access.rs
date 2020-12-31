@@ -22,6 +22,7 @@ use std::rc::Rc;
 
 pub mod clog;
 mod slru;
+pub mod wal;
 
 pub struct DestRemote<'sess> {
     session: &'sess SessionState,

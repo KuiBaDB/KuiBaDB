@@ -92,4 +92,15 @@
   context: KuiBaDB
   short_desc: Size of the clog l2cache
   boot_val: 128
+- vartype: INT
+  name: wal_buff_max_size
+  context: KuiBaDB
+  short_desc: "The max size of one wal buffer, unit: bytes"
+  boot_val: 33554432
+- vartype: INT
+  name: wal_file_max_size
+  context: KuiBaDB
+  short_desc: "The max size of one wal file, unit: bytes"
+  boot_val: 1073741824
+
 

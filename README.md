@@ -26,6 +26,7 @@
     (1 row)
     ```
 -   [x] Add slru and clog. The clog supports two-levels cache and vectorization.
+-   [x] Add wal. We have moved all the IO operations out of the lock!
 -   [ ] Add xact system
 
 -   [ ] Add columnar storage

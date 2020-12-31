@@ -11,7 +11,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 use crate::utils::{AttrNumber, TypLen, TypMod};
-use access::clog;
+use access::{clog, wal, wal::Lsn, wal::TimeLineID};
 use anyhow;
 use clap::{App, Arg};
 use kuiba::{init_log, Oid, VARCHAROID};
@@ -380,6 +380,7 @@ fn exec_simple_query(query: &str, session: &mut SessionState, stream: &mut TcpSt
 pub struct GlobalState {
     pub fmgr_builtins: &'static HashMap<Oid, utils::fmgr::KBFunction>,
     pub clog: &'static clog::GlobalStateExt,
+    pub wal: &'static wal::GlobalStateExt,
     pub cancelmap: &'static Mutex<CancelMap>,
     pub oid_creator: &'static AtomicU32,
     pub gucstate: Arc<guc::GucState>,
@@ -393,6 +394,13 @@ impl GlobalState {
             cancelmap: Box::leak(Box::new(Mutex::<CancelMap>::default())),
             oid_creator: Box::leak(Box::new(AtomicU32::new(std::u32::MAX))),
             clog: Box::leak(Box::new(clog::init(&gucstate))),
+            wal: wal::init(
+                TimeLineID::new(1).unwrap(),
+                Lsn::new(1).unwrap(),
+                Lsn::new(1).unwrap(),
+                &gucstate,
+            )
+            .unwrap(),
             gucstate: gucstate,
             worker_cache: Box::leak(Box::new(ThreadLocal::new())),
         }
