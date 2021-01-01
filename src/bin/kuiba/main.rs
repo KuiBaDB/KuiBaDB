@@ -17,10 +17,12 @@ use clap::{App, Arg};
 use kuiba::{init_log, Oid, VARCHAROID};
 use log;
 use rand;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::{TcpListener, TcpStream};
 use std::sync::{atomic::AtomicBool, atomic::AtomicU32, atomic::Ordering, Arc, Mutex};
 use std::thread;
+use thread_local::ThreadLocal;
 
 mod access;
 mod catalog;
@@ -35,7 +37,10 @@ mod protocol;
 mod utility;
 mod utils;
 
-use utils::SessionState;
+#[cfg(test)]
+mod test;
+
+use utils::{SessionState, WorkerCache};
 
 pub struct CancelState {
     pub key: u32,
@@ -378,19 +383,31 @@ pub struct GlobalState {
     pub cancelmap: &'static Mutex<CancelMap>,
     pub oid_creator: &'static AtomicU32,
     pub gucstate: Arc<guc::GucState>,
+    pub worker_cache: &'static ThreadLocal<RefCell<WorkerCache>>,
+}
+
+impl GlobalState {
+    fn new(gucstate: Arc<guc::GucState>) -> GlobalState {
+        GlobalState {
+            fmgr_builtins: Box::leak(Box::new(utils::fmgr::get_fmgr_builtins())),
+            cancelmap: Box::leak(Box::new(Mutex::<CancelMap>::default())),
+            oid_creator: Box::leak(Box::new(AtomicU32::new(std::u32::MAX))),
+            clog: Box::leak(Box::new(clog::init(&gucstate))),
+            gucstate: gucstate,
+            worker_cache: Box::leak(Box::new(ThreadLocal::new())),
+        }
+    }
+
+    fn init(datadir: &str) -> GlobalState {
+        let mut gucstate = Arc::<guc::GucState>::default();
+        std::env::set_current_dir(datadir).unwrap();
+        guc::load_apply_gucs("kuiba.conf", Arc::make_mut(&mut gucstate)).unwrap();
+        GlobalState::new(gucstate)
+    }
 }
 
 fn main() {
     init_log();
-    let mut global_state = GlobalState {
-        fmgr_builtins: Box::leak(Box::new(utils::fmgr::get_fmgr_builtins())),
-        cancelmap: Box::leak(Box::new(Mutex::<CancelMap>::default())),
-        oid_creator: Box::leak(Box::new(AtomicU32::new(std::u32::MAX))),
-        gucstate: Arc::default(),
-        clog: Box::leak(Box::new(clog::GlobalStateExt::new())),
-    };
-    let mut lastused_sessid = 20181218;
-    log::set_max_level(global_state.gucstate.loglvl);
     let cmdline = App::new("KuiBaDB(魁拔)")
         .version(kuiba::KB_VERSTR)
         .author("盏一 <w@hidva.com>")
@@ -406,15 +423,11 @@ fn main() {
     let datadir = cmdline
         .value_of("datadir")
         .expect("You must specify the -D invocation option!");
-    guc::load_apply_gucs(
-        &format!("{}/kuiba.conf", datadir),
-        Arc::make_mut(&mut global_state.gucstate),
-    )
-    .unwrap();
-    std::env::set_current_dir(datadir).unwrap();
+    let global_state = GlobalState::init(&datadir);
     let port = guc::get_int(&global_state.gucstate, guc::Port) as u16;
     let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
     log::info!("listen. port={}", port);
+    let mut lastused_sessid = 20181218;
     for stream in listener.incoming() {
         let stream = stream.unwrap();
         let global_state = global_state.clone();

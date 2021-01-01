@@ -3,7 +3,8 @@ use kuiba::KB_BLCKSZ;
 use nix::sys::uio::{pread, pwrite};
 use std::collections::HashMap;
 use std::debug_assert;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
+use std::io::ErrorKind;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -97,7 +98,7 @@ fn write(dir: &str, pageno: Pageno, buff: Arc<Buff>) -> anyhow::Result<()> {
     let rpageno = pageno % PAGES_PER_SEGMENT;
     let off = (rpageno * KB_BLCKSZ as u64) as i64;
     let path = seg_path(dir, segno);
-    let file = File::open(path)?;
+    let file = OpenOptions::new().create(true).write(true).open(path)?;
     if KB_BLCKSZ != pwrite(file.as_raw_fd(), &*buff, off)? {
         return Err(anyhow!("SLRU_WRITE_FAILED"));
     }
@@ -114,8 +115,16 @@ fn read(dir: &str, pageno: Pageno) -> anyhow::Result<Arc<Buff>> {
     let rpageno = pageno % PAGES_PER_SEGMENT;
     let off = (rpageno * KB_BLCKSZ as u64) as i64;
     let path = seg_path(dir, segno);
-    let file = File::open(path)?;
     let mut buff = Arc::<Buff>::new([0; KB_BLCKSZ]);
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(e) => {
+            if e.kind() == ErrorKind::NotFound {
+                return Ok(buff);
+            }
+            return Err(e)?;
+        }
+    };
     let readn = pread(file.as_raw_fd(), Arc::get_mut(&mut buff).unwrap(), off)?;
     if readn == KB_BLCKSZ || readn == 0 {
         Ok(buff) // Do we really need ExtendCLOG()?

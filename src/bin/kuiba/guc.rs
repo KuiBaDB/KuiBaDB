@@ -22,7 +22,7 @@ use log;
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd)]
 enum Context {
     Internal,
-    KuibaDB,
+    KuiBaDB,
     SigHup,
     SuSet,
     UserSet,

@@ -11,7 +11,7 @@
 
 **KuiBaDB** is only developed in my free time, so the progress could be very slow.
 
--   [x] Init
+-   [x] Add guc
 -   [x] Support `select expr1, expr2`:
 
     ```
@@ -25,7 +25,7 @@
     2018   | 1218
     (1 row)
     ```
-
+-   [x] Add slru and clog. The clog supports two-levels cache and vectorization.
 -   [ ] Add xact system
 
 -   [ ] Add columnar storage

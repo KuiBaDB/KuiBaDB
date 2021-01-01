@@ -10,7 +10,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-use crate::utils::{SessionState, TypLen, Xid};
+use crate::utils::{SessionState, TypLen};
 use crate::{protocol, ErrCode};
 use anyhow::{anyhow, Context};
 use kuiba::{Oid, OptOid};
@@ -23,7 +23,6 @@ pub struct FormDataDatabase {
     pub datname: String,
     pub datistemplate: bool,
     pub datallowconn: bool,
-    pub datfrozenxid: Xid,
 }
 
 fn column_val<'a>(row: &[(&str, Option<&'a str>)], name: &str) -> Option<&'a str> {
@@ -54,7 +53,6 @@ pub fn get_database(datname: &str) -> anyhow::Result<FormDataDatabase> {
                     .parse::<i32>()
                     .unwrap()
                     == 0,
-                datfrozenxid: column_val(row, "datfrozenxid").unwrap().parse().unwrap(),
             });
             true
         },

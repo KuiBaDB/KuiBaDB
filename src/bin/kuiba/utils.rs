@@ -14,13 +14,42 @@ use crate::access::clog;
 use crate::catalog::namespace::SessionStateExt as NameSpaceSessionStateExt;
 use crate::{get_errcode, guc, protocol, GlobalState, TcpStream};
 use kuiba::Oid;
+use std::cell::RefCell;
 use std::debug_assert;
 use std::num::NonZeroU16;
 use std::sync::{atomic::AtomicBool, Arc};
+use thread_local::ThreadLocal;
 
 pub mod fmgr;
 
+pub struct Worker {
+    pub cache: &'static RefCell<WorkerCache>, // thread local
+    pub state: WorkerState,
+}
+
+impl Worker {
+    pub fn new(state: WorkerState) -> Worker {
+        let cache = state
+            .worker_cache
+            .get_or(|| RefCell::new(WorkerCache::new(&state)));
+        Worker { cache, state }
+    }
+}
+
+pub struct WorkerCache {
+    pub clog: clog::WorkerCacheExt,
+}
+
+impl WorkerCache {
+    fn new(state: &WorkerState) -> WorkerCache {
+        WorkerCache {
+            clog: clog::WorkerCacheExt::new(&state.gucstate),
+        }
+    }
+}
+
 pub struct WorkerState {
+    pub worker_cache: &'static ThreadLocal<RefCell<WorkerCache>>,
     pub clog: clog::WorkerStateExt,
     pub fmgr_builtins: &'static fmgr::FmgrBuiltinsMap,
     pub sessid: u32,
@@ -32,6 +61,7 @@ pub struct WorkerState {
 impl WorkerState {
     pub fn new(session: &SessionState) -> WorkerState {
         WorkerState {
+            worker_cache: session.worker_cache,
             fmgr_builtins: session.fmgr_builtins,
             sessid: session.sessid,
             reqdb: session.reqdb,
@@ -43,6 +73,7 @@ impl WorkerState {
 }
 
 pub struct SessionState {
+    pub worker_cache: &'static ThreadLocal<RefCell<WorkerCache>>,
     pub clog: clog::WorkerStateExt,
     pub fmgr_builtins: &'static fmgr::FmgrBuiltinsMap,
     pub sessid: u32,
@@ -76,6 +107,7 @@ impl SessionState {
             dead: false,
             nsstate: NameSpaceSessionStateExt::default(),
             clog: clog::WorkerStateExt::new(gstate.clog),
+            worker_cache: gstate.worker_cache,
         }
     }
 

@@ -36,7 +36,7 @@
   boot_val: 16
 - vartype: INT
   name: port
-  context: KuibaDB
+  context: KuiBaDB
   short_desc: Sets the TCP port the server listens on.
   boot_val: 1218
 - vartype: STR
@@ -82,3 +82,14 @@
   short_desc: Sets the schema search order for names that are not schema-qualified.
   boot_val: "public,kb_catalog"
   preassign: search_path_preassign
+- vartype: INT
+  name: clog_l1cache_size
+  context: SigHup
+  short_desc: Size of the clog l1cache
+  boot_val: 1024
+- vartype: INT
+  name: clog_l2cache_size
+  context: KuiBaDB
+  short_desc: Size of the clog l2cache
+  boot_val: 128
+

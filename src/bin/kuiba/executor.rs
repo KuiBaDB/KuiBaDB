@@ -14,7 +14,7 @@ use crate::optimizer;
 use crate::optimizer::PlannedStmt;
 use crate::parser::sem;
 use crate::utils::fmgr::{get_fn_addr, FmgrInfo};
-use crate::utils::{SessionState, WorkerState};
+use crate::utils::{SessionState, Worker, WorkerState};
 use std::rc::Rc;
 
 pub trait DestReceiver {
@@ -185,7 +185,8 @@ pub fn exec_select(
     dest: &mut dyn DestReceiver,
 ) -> anyhow::Result<()> {
     let state = WorkerState::new(session);
-    let mut planstate = exec_init_plan(&stmt.plan_tree, &state)?;
+    let worker = Worker::new(state);
+    let mut planstate = exec_init_plan(&stmt.plan_tree, &worker.state)?;
     dest.startup(stmt.plan_tree.tlist())?;
     loop {
         match planstate.exec()? {
