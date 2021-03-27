@@ -12,10 +12,11 @@ limitations under the License.
 */
 use crate::access::clog;
 use crate::catalog::namespace::SessionStateExt as NameSpaceSessionStateExt;
-use crate::{get_errcode, guc, protocol, GlobalState, TcpStream};
-use kuiba::Oid;
+use crate::Oid;
+use crate::{get_errcode, guc, protocol, GlobalState};
 use std::cell::RefCell;
 use std::debug_assert;
+use std::net::TcpStream;
 use std::num::NonZeroU16;
 use std::sync::{atomic::AtomicBool, Arc};
 use thread_local::ThreadLocal;

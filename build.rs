@@ -64,7 +64,7 @@ impl Guc {
 
 fn load_gucs() -> Gucs {
     let mut gucs = Gucs::default();
-    const INPUTFILE: &str = "./src/bin/kuiba/guc/gucdef.yaml";
+    const INPUTFILE: &str = "./src/guc/gucdef.yaml";
     let yamldocs = common::load_yaml(INPUTFILE).unwrap();
     let yamldoc = &yamldocs[0];
     for gucdat in yamldoc.as_vec().unwrap() {

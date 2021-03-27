@@ -12,8 +12,8 @@ limitations under the License.
 */
 use crate::utils::{SessionState, TypLen};
 use crate::{protocol, ErrCode};
+use crate::{Oid, OptOid};
 use anyhow::{anyhow, Context};
-use kuiba::{Oid, OptOid};
 
 pub mod namespace;
 

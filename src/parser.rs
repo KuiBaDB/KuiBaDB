@@ -15,7 +15,7 @@ use lalrpop_util::lalrpop_mod;
 
 pub mod sem;
 pub mod syn;
-lalrpop_mod!(sql, "/bin/kuiba/parser/sql.rs");
+lalrpop_mod!(sql, "/parser/sql.rs");
 
 pub fn parse(query: &str) -> anyhow::Result<syn::Stmt> {
     match sql::StmtParser::new().parse(query) {

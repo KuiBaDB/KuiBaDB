@@ -21,6 +21,8 @@ nix = "0.19"
 lru = "0.6.3"
 static_assertions = "1"
 thread_local = "1"
+crc32c = "0.6"
+memoffset = "0.6"
 
 
 [build-dependencies]

@@ -15,8 +15,8 @@ use crate::guc;
 use crate::parser::syn;
 use crate::utils::SessionState;
 use crate::{protocol, ErrCode};
+use crate::{Oid, OptOid};
 use anyhow::{anyhow, Context};
-use kuiba::{Oid, OptOid};
 use std::sync::Arc;
 
 #[derive(Default)]

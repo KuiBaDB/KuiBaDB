@@ -12,8 +12,8 @@ limitations under the License.
 */
 use crate::utils::{TypLen, TypMod};
 use crate::{guc, AttrNumber};
+use crate::{Oid, OptOid};
 use byteorder::{NetworkEndian, ReadBytesExt, WriteBytesExt};
-use kuiba::{Oid, OptOid};
 use std::collections::HashMap;
 use std::io::{Cursor, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::net::TcpStream;

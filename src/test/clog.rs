@@ -13,7 +13,7 @@ use crate::clog::{VecXidStatus, WorkerExt, XidStatus, XACTS_PER_BYTE};
 use crate::guc;
 use crate::test::new_worker;
 use crate::utils::{Worker, Xid};
-use kuiba::KB_BLCKSZ;
+use crate::KB_BLCKSZ;
 use std::assert_eq;
 
 fn get_xid_status(w: &Worker, xids: &[Xid]) -> Vec<XidStatus> {

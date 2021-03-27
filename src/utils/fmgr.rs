@@ -11,9 +11,9 @@
 
 use crate::datumblock::{DatumBlock, DatumBlockSingle};
 use crate::utils::WorkerState;
+use crate::Oid;
 use crate::{protocol, ErrCode};
 use anyhow::{anyhow, Context};
-use kuiba::Oid;
 use std::collections::HashMap;
 use std::rc::Rc;
 

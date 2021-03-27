@@ -9,8 +9,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 use crate::guc::{self, GucState};
-use kuiba;
+use crate::utils::Xid;
+use crate::Oid;
+use crc32c;
 use log;
+use memoffset::offset_of;
 use nix::libc::off_t;
 use nix::sys::uio::IoVec;
 use nix::unistd::SysconfVar::IOV_MAX;
@@ -21,6 +24,7 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::thread::panicking;
+use std::time::SystemTime;
 
 #[cfg(target_os = "linux")]
 fn pwritev(fd: RawFd, iov: &[IoVec<&[u8]>], offset: off_t) -> nix::Result<usize> {
@@ -72,16 +76,107 @@ fn pwritevn<'a>(
     Ok((offset - orig_offset) as usize)
 }
 
+pub struct Ckpt {
+    pub redo: Lsn,
+    pub curtli: TimeLineID,
+    pub prevtli: TimeLineID,
+    pub nextxid: Xid,
+    pub nextoid: Oid,
+    pub time: SystemTime,
+}
+
+pub struct Ctl {
+    ctlver: u32,
+    catver: u32,
+    time: SystemTime,
+    ckpt: Lsn,
+    ckptcpy: Ckpt,
+    crc32c: u32,
+}
+
+trait Rmgr {
+    fn name(&self) -> &'static str;
+    fn redo(&mut self, record: &[u8]);
+    fn desc(&self, out: &mut String, record: &[u8]);
+    fn descstr(&self, record: &[u8]) -> String {
+        let mut s = String::new();
+        self.desc(&mut s, record);
+        s
+    }
+}
+
+#[repr(u8)]
+enum RmgrId {
+    Xlog,
+    Xact,
+    Total,
+}
+
+pub trait WalStorageFile {
+    fn pread(&self, buf: &mut [u8], offset: usize) -> anyhow::Result<usize>;
+    fn len(&self) -> usize;
+    fn lsn(&self) -> Lsn;
+}
+
+pub trait WalStorage {
+    fn find(&self, lsn: Lsn) -> anyhow::Result<Option<String>>;
+    fn open(&mut self, key: &str) -> anyhow::Result<Box<dyn WalStorageFile>>;
+    fn recycle(&mut self, lsn: Lsn) -> anyhow::Result<()>;
+}
+
+pub struct LocalWalStorage {}
+
+impl LocalWalStorage {
+    pub fn new() -> LocalWalStorage {
+        todo!()
+    }
+}
+
+impl WalStorage for LocalWalStorage {
+    fn find(&self, lsn: Lsn) -> anyhow::Result<Option<String>> {
+        todo!()
+    }
+
+    fn open(&mut self, key: &str) -> anyhow::Result<Box<dyn WalStorageFile>> {
+        todo!()
+    }
+
+    fn recycle(&mut self, lsn: Lsn) -> anyhow::Result<()> {
+        todo!()
+    }
+}
+
+pub struct WalReader {
+    storage: Box<dyn WalStorage>,
+    readlsn: Option<Lsn>,
+    endlsn: Lsn,
+    file: Option<Box<dyn WalStorageFile>>,
+}
+
+impl WalReader {
+    pub fn new(storage: Box<dyn WalStorage>, startlsn: Lsn) -> WalReader {
+        todo!()
+    }
+
+    pub fn rescan(&mut self, startlsn: Lsn) {
+        todo!()
+    }
+
+    pub fn read_record(&mut self) -> anyhow::Result<&[u8]> {
+        todo!()
+    }
+}
+
 struct Progress {
-    pt: Mutex<kuiba::ProgressTracker>,
-    p: kuiba::Progress,
+    pt: Mutex<crate::ProgressTracker>,
+    p: crate::Progress,
 }
 
 impl Progress {
     fn new(d: u64) -> Progress {
         Progress {
-            pt: Mutex::new(kuiba::ProgressTracker::new(d)),
-            p: kuiba::Progress::new(d),
+            pt: Mutex::new(crate::ProgressTracker::new(d)),
+            p: crate::Progress::new(d),
         }
     }
 
@@ -114,6 +209,7 @@ impl Drop for AbortWhenPanic {
     }
 }
 
+// The lsn for the first record is 0x0133F0E2
 pub type Lsn = NonZeroU64;
 pub type TimeLineID = NonZeroU32;
 
@@ -125,7 +221,7 @@ struct WritingWalFile {
 }
 
 fn wal_filepath(tli: TimeLineID, lsn: Lsn) -> String {
-    format!("kb_wal/{}/{}", tli, lsn)
+    format!("kb_wal/{:0>8X}{:0>16X}.wal", tli, lsn)
 }
 
 impl WritingWalFile {
@@ -176,14 +272,7 @@ impl Drop for WritingWalFile {
             }
         };
         let end_lsn = self.start_lsn.get() + filesize;
-        if end_lsn > self.write.get() {
-            let errmsg = format!(
-                "WritingWalFile::drop some writes failed. lsn={}",
-                self.start_lsn
-            );
-            log::error!("{}", errmsg);
-            panic!("{}", errmsg);
-        }
+        self.write.wait(end_lsn);
         if let Err(e) = self.fsync(end_lsn) {
             let errmsg = format!(
                 "WritingWalFile::drop sync_data failed. lsn={} err={}",
@@ -193,6 +282,20 @@ impl Drop for WritingWalFile {
             panic!("{}", errmsg);
         }
     }
+}
+
+#[repr(C, packed(1))]
+struct RecordHdr {
+    totlen: u32,
+    info: u8,
+    id: RmgrId,
+    xid: Option<Xid>,
+    prev: Option<Lsn>,
+    crc32c: u32,
+}
+
+fn mut_hdr(d: &mut [u8]) -> &mut RecordHdr {
+    unsafe { &mut *(d.as_mut_ptr() as *mut RecordHdr) }
 }
 
 type RecordBuff = Vec<u8>;
@@ -230,6 +333,7 @@ struct InsertState {
     redo: Lsn,
     buf: Vec<RecordBuff>,
     buflsn: Lsn,
+    prevlsn: Option<Lsn>,
     bufsize: usize,
     forcesync: bool,
     // if file is None, it means that file_start_lsn = buflsn.
@@ -264,10 +368,23 @@ impl InsertState {
         writereq
     }
 
+    fn fill_record(record: &mut RecordBuff, prevlsn: Option<Lsn>) {
+        let hdr = mut_hdr(record.as_mut_slice());
+        hdr.prev = prevlsn;
+        let bodycrc = hdr.crc32c;
+        let crc =
+            crc32c::crc32c_append(bodycrc, &record.as_slice()[..offset_of!(RecordHdr, crc32c)]);
+        let hdr = mut_hdr(record.as_mut_slice());
+        hdr.crc32c = crc;
+    }
+
     // Remeber we are locking, so be quick.
-    fn insert(&mut self, record: RecordBuff) -> InsertRet {
+    fn insert(&mut self, mut record: RecordBuff) -> InsertRet {
+        InsertState::fill_record(&mut record, self.prevlsn);
+        let reclsn = self.nextlsn();
         let newbufsize = self.bufsize + record.len();
-        let retlsnval = self.buflsn.get() + newbufsize as u64;
+        let retlsnval = reclsn.get() + record.len() as u64;
+        self.prevlsn = Some(reclsn);
         let retlsn = Lsn::new(retlsnval).unwrap();
         if let Some(ref file) = self.file {
             let newfilesize = retlsnval - file.start_lsn.get();
@@ -320,6 +437,7 @@ impl GlobalStateExt {
     fn new(
         tli: TimeLineID,
         lsn: Lsn,
+        prevlsn: Option<Lsn>,
         redo: Lsn,
         wal_buff_max_size: usize,
         wal_file_max_size: u64,
@@ -334,6 +452,7 @@ impl GlobalStateExt {
                 wal_buff_max_size,
                 wal_file_max_size,
                 redo,
+                prevlsn,
                 curtimeline: tli,
                 buf: Vec::new(),
                 buflsn: lsn,
@@ -350,7 +469,7 @@ impl GlobalStateExt {
         insert
     }
 
-    fn do_create(&self, tli: TimeLineID, retlsn: Lsn) -> anyhow::Result<()> {
+    fn do_create(&self, tli: TimeLineID, retlsn: Lsn) -> std::io::Result<()> {
         let file = Arc::new(WritingWalFile::new(tli, retlsn, self.write, self.flush)?);
         let wreq = {
             let mut insert = self.get_insert_state();
@@ -367,7 +486,7 @@ impl GlobalStateExt {
         if let Some(wreq) = wreq {
             let weak_file = Arc::downgrade(&wreq.file);
             let filelsn = wreq.buflsn.get();
-            let wn = wreq.write()?;
+            let wn = wreq.write().unwrap();
             self.do_fsync(weak_file, filelsn + wn as u64)?;
         }
         Ok(())
@@ -443,6 +562,12 @@ impl GlobalStateExt {
         Ok(self.flush.wait(lsnval))
     }
 
+    fn do_write(&self, wreq: InsertWriteReq, lsnval: u64) -> std::io::Result<()> {
+        let weak_file = Arc::downgrade(&wreq.file);
+        wreq.write().unwrap();
+        self.do_fsync(weak_file, lsnval)
+    }
+
     pub fn fsync(&self, lsn: Lsn) -> std::io::Result<()> {
         let _guard = AbortWhenPanic;
         let lsnval = lsn.get();
@@ -454,11 +579,7 @@ impl GlobalStateExt {
             FlushAction::Noop => Ok(()),
             FlushAction::Wait => Ok(self.flush.wait(lsnval)),
             FlushAction::Flush(weak_file) => self.do_fsync(weak_file, lsnval),
-            FlushAction::Write(wreq) => {
-                let weak_file = Arc::downgrade(&wreq.file);
-                wreq.write().unwrap();
-                self.do_fsync(weak_file, lsnval)
-            }
+            FlushAction::Write(wreq) => self.do_write(wreq, lsnval),
         }
     }
 }
@@ -466,10 +587,18 @@ impl GlobalStateExt {
 pub fn init(
     tli: TimeLineID,
     lsn: Lsn,
+    prevlsn: Option<Lsn>,
     redo: Lsn,
     gucstate: &GucState,
 ) -> std::io::Result<&'static GlobalStateExt> {
     let wal_buff_max_size = guc::get_int(gucstate, guc::WalBuffMaxSize) as usize;
     let wal_file_max_size = guc::get_int(gucstate, guc::WalFileMaxSize) as u64;
-    GlobalStateExt::new(tli, lsn, redo, wal_buff_max_size, wal_file_max_size)
+    GlobalStateExt::new(
+        tli,
+        lsn,
+        prevlsn,
+        redo,
+        wal_buff_max_size,
+        wal_file_max_size,
+    )
 }

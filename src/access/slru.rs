@@ -8,8 +8,8 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+use crate::KB_BLCKSZ;
 use anyhow::anyhow;
-use kuiba::KB_BLCKSZ;
 use nix::sys::uio::{pread, pwrite};
 use std::collections::HashMap;
 use std::debug_assert;
