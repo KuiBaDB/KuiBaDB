@@ -28,18 +28,18 @@ use stderrlog::{ColorChoice, Timestamp};
 use thread_local::ThreadLocal;
 use utils::{AttrNumber, SessionState, TypLen, TypMod, WorkerCache};
 
-mod access;
-mod catalog;
-mod commands;
-mod common;
-mod datumblock;
-mod executor;
+pub mod access;
+pub mod catalog;
+pub mod commands;
+pub mod common;
+pub mod datumblock;
+pub mod executor;
 pub mod guc;
-mod optimizer;
-mod parser;
-mod protocol;
-mod utility;
-mod utils;
+pub mod optimizer;
+pub mod parser;
+pub mod protocol;
+pub mod utility;
+pub mod utils;
 
 #[cfg(test)]
 mod test;

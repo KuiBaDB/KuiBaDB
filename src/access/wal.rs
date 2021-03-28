@@ -9,8 +9,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 use crate::guc::{self, GucState};
-use crate::utils::Xid;
+use crate::utils::{persist, Xid};
 use crate::Oid;
+use anyhow::anyhow;
 use crc32c;
 use log;
 use memoffset::offset_of;
@@ -18,7 +19,10 @@ use nix::libc::off_t;
 use nix::sys::uio::IoVec;
 use nix::unistd::SysconfVar::IOV_MAX;
 use std::cmp::min;
+use std::convert::TryFrom;
 use std::fs::{File, OpenOptions};
+use std::io::Read;
+use std::mem::size_of;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -76,6 +80,8 @@ fn pwritevn<'a>(
     Ok((offset - orig_offset) as usize)
 }
 
+#[repr(C, packed(1))]
+#[derive(Copy, Clone)]
 pub struct Ckpt {
     pub redo: Lsn,
     pub curtli: TimeLineID,
@@ -84,14 +90,77 @@ pub struct Ckpt {
     pub nextoid: Oid,
     pub time: SystemTime,
 }
+const CKPTLEN: usize = size_of::<Ckpt>();
 
+#[repr(C, packed(1))]
+#[derive(Copy, Clone)]
 pub struct Ctl {
-    ctlver: u32,
-    catver: u32,
-    time: SystemTime,
-    ckpt: Lsn,
-    ckptcpy: Ckpt,
-    crc32c: u32,
+    pub ctlver: u32,
+    pub catver: u32,
+    pub time: SystemTime,
+    pub ckpt: Lsn,
+    pub ckptcpy: Ckpt,
+    pub crc32c: u32,
+}
+const CTLLEN: usize = size_of::<Ctl>();
+
+pub const KB_CTL_VER: u32 = 20130203;
+pub const KB_CAT_VER: u32 = 20181218;
+pub const CONTROL_FILE: &'static str = "global/kb_control";
+
+impl Ctl {
+    pub fn new(ckpt: Lsn, ckptcpy: Ckpt) -> Ctl {
+        let mut ctl = Ctl {
+            ctlver: KB_CTL_VER,
+            catver: KB_CAT_VER,
+            time: SystemTime::now(),
+            ckpt,
+            ckptcpy,
+            crc32c: 0,
+        };
+        let crc = ctl.cal_crc32c();
+        ctl.crc32c = crc;
+        ctl
+    }
+
+    pub fn cal_crc32c(&self) -> u32 {
+        let crc = unsafe {
+            let ptr = self as *const Ctl as *const u8;
+            let len = offset_of!(Ctl, crc32c);
+            let d = std::slice::from_raw_parts(ptr, len);
+            crc32c::crc32c(d)
+        };
+        crc
+    }
+
+    pub fn persist(&self) -> anyhow::Result<()> {
+        unsafe {
+            let ptr = self as *const _ as *const u8;
+            let d = std::slice::from_raw_parts(ptr, CTLLEN);
+            persist(CONTROL_FILE, d)
+        }
+    }
+
+    pub fn load() -> anyhow::Result<Ctl> {
+        let mut d = Vec::with_capacity(CTLLEN);
+        File::open(CONTROL_FILE)?.read_to_end(&mut d)?;
+        if d.len() != CTLLEN {
+            Err(anyhow!("load: invalid control file. len={}", d.len()))
+        } else {
+            Ok(unsafe { std::ptr::read(d.as_ptr() as *const Ctl) })
+        }
+    }
+}
+
+pub fn new_ckpt_rec(ckpt: &Ckpt) -> Vec<u8> {
+    let mut record = Vec::with_capacity(RECHDRLEN + CKPTLEN);
+    record.resize(RECHDRLEN, 0);
+    unsafe {
+        let ptr = ckpt as *const _ as *const u8;
+        let d = std::slice::from_raw_parts(ptr, CKPTLEN);
+        record.extend_from_slice(d);
+    }
+    record
 }
 
 trait Rmgr {
@@ -106,7 +175,8 @@ trait Rmgr {
 }
 
 #[repr(u8)]
-enum RmgrId {
+#[derive(Debug)]
+pub enum RmgrId {
     Xlog,
     Xact,
     Total,
@@ -285,17 +355,43 @@ impl Drop for WritingWalFile {
 }
 
 #[repr(C, packed(1))]
-struct RecordHdr {
-    totlen: u32,
-    info: u8,
-    id: RmgrId,
-    xid: Option<Xid>,
-    prev: Option<Lsn>,
-    crc32c: u32,
+pub struct RecordHdr {
+    pub totlen: u32,
+    pub info: u8,
+    pub id: RmgrId,
+    pub xid: Option<Xid>,
+    pub prev: Option<Lsn>,
+    pub crc32c: u32,
+}
+pub const RECHDRLEN: usize = size_of::<RecordHdr>();
+
+impl RecordHdr {
+    pub fn rmgr_info(&self) -> u8 {
+        self.info & 0xf0
+    }
 }
 
 fn mut_hdr(d: &mut [u8]) -> &mut RecordHdr {
     unsafe { &mut *(d.as_mut_ptr() as *mut RecordHdr) }
+}
+
+pub fn finish_record(d: &mut [u8], id: RmgrId, info: u8, xid: Option<Xid>) {
+    let len = d.len();
+    if len > u32::MAX as usize || len < RECHDRLEN {
+        panic!(
+            "invalid record in finish_record(). len={} id={:?} info={} xid={:?}",
+            len, id, info, xid
+        );
+    }
+    let crc = crc32c::crc32c(&d[RECHDRLEN..]);
+    let len = len as u32;
+    let hdr = mut_hdr(d);
+    hdr.totlen = len;
+    hdr.info = info;
+    hdr.id = id;
+    hdr.xid = xid;
+    hdr.crc32c = crc;
+    return;
 }
 
 type RecordBuff = Vec<u8>;
@@ -469,8 +565,9 @@ impl GlobalStateExt {
         insert
     }
 
-    fn do_create(&self, tli: TimeLineID, retlsn: Lsn) -> std::io::Result<()> {
-        let file = Arc::new(WritingWalFile::new(tli, retlsn, self.write, self.flush)?);
+    fn do_create(&self, tli: TimeLineID, retlsn: Lsn) {
+        let file = WritingWalFile::new(tli, retlsn, self.write, self.flush).unwrap();
+        let file = Arc::new(file);
         let wreq = {
             let mut insert = self.get_insert_state();
             if insert.forcesync {
@@ -487,22 +584,21 @@ impl GlobalStateExt {
             let weak_file = Arc::downgrade(&wreq.file);
             let filelsn = wreq.buflsn.get();
             let wn = wreq.write().unwrap();
-            self.do_fsync(weak_file, filelsn + wn as u64)?;
+            self.do_fsync(weak_file, filelsn + wn as u64);
         }
-        Ok(())
     }
 
-    fn handle_insert_ret(&self, ret: InsertRet) -> anyhow::Result<Lsn> {
+    fn handle_insert_ret(&self, ret: InsertRet) -> Lsn {
         match ret {
-            InsertRet::NoAction(lsn) => Ok(lsn),
+            InsertRet::NoAction(lsn) => lsn,
             InsertRet::Write(lsn, wreq) => {
-                wreq.write()?;
-                Ok(lsn)
+                wreq.write().unwrap();
+                lsn
             }
             InsertRet::WriteAndCreate { tli, retlsn, wreq } => {
-                wreq.write()?;
-                self.do_create(tli, retlsn)?;
-                Ok(retlsn)
+                wreq.write().unwrap();
+                self.do_create(tli, retlsn);
+                retlsn
             }
         }
     }
@@ -513,7 +609,7 @@ impl GlobalStateExt {
             let mut state = self.get_insert_state();
             state.insert(r)
         };
-        self.handle_insert_ret(insert_res).unwrap()
+        self.handle_insert_ret(insert_res)
     }
 
     pub fn try_insert_record(&self, r: RecordBuff, page_lsn: Lsn) -> Option<Lsn> {
@@ -525,7 +621,7 @@ impl GlobalStateExt {
             }
             state.insert(r)
         };
-        Some(self.handle_insert_ret(insert_res).unwrap())
+        Some(self.handle_insert_ret(insert_res))
     }
 
     fn flush_action(&self, lsn: Lsn) -> FlushAction {
@@ -553,31 +649,35 @@ impl GlobalStateExt {
         return FlushAction::Wait;
     }
 
-    fn do_fsync(&self, weak_file: Weak<WritingWalFile>, lsnval: u64) -> std::io::Result<()> {
+    fn do_fsync(&self, weak_file: Weak<WritingWalFile>, lsnval: u64) {
         let file = weak_file.upgrade();
         if let Some(file) = file {
             self.write.wait(lsnval);
-            file.fsync(lsnval)?;
+            // Remember fsync() will still be called again in WritingWalFile::drop(),
+            // and that invocation may succeed. If we return an error here, not panic,
+            // this may cause a transaction to be considered aborted, but all wal records
+            // of this transaction have been flushed successfully.
+            file.fsync(lsnval).unwrap();
         }
-        Ok(self.flush.wait(lsnval))
+        self.flush.wait(lsnval);
     }
 
-    fn do_write(&self, wreq: InsertWriteReq, lsnval: u64) -> std::io::Result<()> {
+    fn do_write(&self, wreq: InsertWriteReq, lsnval: u64) {
         let weak_file = Arc::downgrade(&wreq.file);
         wreq.write().unwrap();
-        self.do_fsync(weak_file, lsnval)
+        self.do_fsync(weak_file, lsnval);
     }
 
-    pub fn fsync(&self, lsn: Lsn) -> std::io::Result<()> {
+    pub fn fsync(&self, lsn: Lsn) {
         let _guard = AbortWhenPanic;
         let lsnval = lsn.get();
         if lsnval <= self.flush.get() {
-            return Ok(());
+            return;
         }
         let action = self.flush_action(lsn);
         match action {
-            FlushAction::Noop => Ok(()),
-            FlushAction::Wait => Ok(self.flush.wait(lsnval)),
+            FlushAction::Noop => (),
+            FlushAction::Wait => self.flush.wait(lsnval),
             FlushAction::Flush(weak_file) => self.do_fsync(weak_file, lsnval),
             FlushAction::Write(wreq) => self.do_write(wreq, lsnval),
         }
@@ -601,4 +701,24 @@ pub fn init(
         wal_buff_max_size,
         wal_file_max_size,
     )
+}
+
+#[repr(u8)]
+#[derive(Copy, Clone, Debug)]
+pub enum XlogInfo {
+    NextOid = 0x30,
+    Ckpt = 0x10,
+}
+
+impl TryFrom<u8> for XlogInfo {
+    type Error = anyhow::Error;
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        if value == XlogInfo::NextOid as u8 {
+            Ok(XlogInfo::NextOid)
+        } else if value == XlogInfo::Ckpt as u8 {
+            Ok(XlogInfo::Ckpt)
+        } else {
+            Err(anyhow!("try from u8 to XlogInfo failed. value={}", value))
+        }
+    }
 }

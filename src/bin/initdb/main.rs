@@ -14,9 +14,13 @@ limitations under the License.
 // we **do** need a better way to initdb!!!
 
 use clap::{App, Arg};
+use kuiba::access::wal;
+use kuiba::utils::Xid;
 use kuiba::*;
 use log;
 use sqlite;
+use std::mem::{size_of, transmute};
+use std::time::SystemTime;
 use std::vec::Vec;
 
 struct Attr {
@@ -874,6 +878,29 @@ fn create_kuiba_metadata() {
     .unwrap();
 }
 
+fn create_ctl(gucstate: &guc::GucState) -> anyhow::Result<()> {
+    let lsn = wal::Lsn::new(20181218).unwrap();
+    let tli = wal::TimeLineID::new(1).unwrap();
+    let wals = wal::init(tli, lsn, None, lsn, gucstate)?;
+
+    let ckpt = wal::Ckpt {
+        curtli: tli,
+        prevtli: tli,
+        redo: lsn,
+        nextxid: Xid::new(1).unwrap(),
+        nextoid: Oid::new(1).unwrap(),
+        time: SystemTime::now(),
+    };
+    let mut rec = wal::new_ckpt_rec(&ckpt);
+    wal::finish_record(&mut rec, wal::RmgrId::Xlog, wal::XlogInfo::Ckpt as u8, None);
+
+    let lsn = wals.insert_record(rec);
+    wals.fsync(lsn);
+
+    let ctl = wal::Ctl::new(lsn, ckpt);
+    ctl.persist()
+}
+
 fn main() {
     init_log();
     let cmdline = App::new("initdb initializes a KuiBaDB cluster.")
@@ -894,8 +921,16 @@ fn main() {
     std::fs::write("kuiba.conf", format!("# define your GUC here.\n")).unwrap();
     std::fs::create_dir_all("kb_wal").unwrap();
     std::fs::create_dir_all("kb_xact").unwrap();
+    let mut gucstate = guc::GucState::default();
+    guc::load_apply_gucs("kuiba.conf", &mut gucstate).unwrap();
+    let gucstate = gucstate;
+    log::info!("create global metadata");
     create_global_metadata();
+    log::info!("create template0 metadata");
     create_template0_metadata();
+    log::info!("create kuiba metadata");
     create_kuiba_metadata();
+    log::info!("create control file");
+    create_ctl(&gucstate).unwrap();
     log::info!("initdb success");
 }

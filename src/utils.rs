@@ -14,11 +14,16 @@ use crate::access::clog;
 use crate::catalog::namespace::SessionStateExt as NameSpaceSessionStateExt;
 use crate::Oid;
 use crate::{get_errcode, guc, protocol, GlobalState};
+use anyhow::anyhow;
 use std::cell::RefCell;
 use std::debug_assert;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::net::TcpStream;
 use std::num::NonZeroU16;
+use std::path::Path;
 use std::sync::{atomic::AtomicBool, Arc};
+use tempfile::NamedTempFile;
 use thread_local::ThreadLocal;
 
 pub mod fmgr;
@@ -188,3 +193,24 @@ impl std::convert::From<TypMod> for i32 {
 
 pub type AttrNumber = NonZeroU16;
 pub type Xid = std::num::NonZeroU64;
+
+pub fn sync_dir<P: AsRef<Path>>(path: P) -> std::io::Result<()> {
+    File::open(path)?.sync_all()
+}
+
+// Path::new(file).parent().unwrap() must not be empty.
+pub fn persist<P: AsRef<Path>>(file: P, d: &[u8]) -> anyhow::Result<()> {
+    let path = file.as_ref();
+    {
+        let mut tempf = NamedTempFile::new_in(".")?;
+        tempf.write_all(d)?;
+        tempf.flush()?;
+        let targetfile = tempf.persist(path)?;
+        targetfile.sync_all()?;
+    }
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow!("persist: invalid filepath. file={:?}", path))?;
+    sync_dir(dir)?;
+    Ok(())
+}
