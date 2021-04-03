@@ -15,11 +15,9 @@ use kuiba::access::wal;
 fn main() {
     let ctl = wal::Ctl::load().unwrap();
     let t: DateTime<Local> = ctl.time.into();
-    let ctlver = ctl.ctlver;
-    let catver = ctl.catver;
-    println!("kb_control version number: {}", ctlver);
-    println!("Catalog version number: {}", catver);
-    println!("kb_control last modified: {}", t);
+    println!("kb_control version number: {}", wal::KB_CTL_VER);
+    println!("Catalog version number: {}", wal::KB_CAT_VER);
+    println!("kb_control last modified: {:?}", t);
     let ckpt = ctl.ckpt;
     println!("Latest checkpoint location: {}", ckpt);
     let v = ctl.ckptcpy.redo;
@@ -33,8 +31,5 @@ fn main() {
     let v = ctl.ckptcpy.nextoid;
     println!("Latest checkpoint's NextOID: {}", v);
     let v: DateTime<Local> = ctl.ckptcpy.time.into();
-    println!("Time of latest checkpoint: {}", v);
-    let v1 = ctl.crc32c;
-    let v2 = ctl.cal_crc32c();
-    println!("kb_control crc: {}. expected crc: {}", v1, v2);
+    println!("Time of latest checkpoint: {:?}", v);
 }

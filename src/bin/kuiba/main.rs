@@ -11,7 +11,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 use clap::{App, Arg};
-use kuiba::{guc, init_log, postgres_main, redo};
+use kuiba::{access::redo::redo, guc, init_log, postgres_main};
 use std::net::TcpListener;
 use std::thread;
 

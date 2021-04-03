@@ -8,6 +8,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+use crate::access::redo::RedoState;
 use crate::guc::{self, GucState};
 use crate::utils::{persist, Xid};
 use crate::Oid;
@@ -18,8 +19,10 @@ use memoffset::offset_of;
 use nix::libc::off_t;
 use nix::sys::uio::IoVec;
 use nix::unistd::SysconfVar::IOV_MAX;
+use std::cell::RefCell;
 use std::cmp::min;
-use std::convert::TryFrom;
+use std::convert::{From, Into};
+use std::fmt::Write;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::mem::size_of;
@@ -28,7 +31,7 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::thread::panicking;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "linux")]
 fn pwritev(fd: RawFd, iov: &[IoVec<&[u8]>], offset: off_t) -> nix::Result<usize> {
@@ -80,8 +83,15 @@ fn pwritevn<'a>(
     Ok((offset - orig_offset) as usize)
 }
 
-#[repr(C, packed(1))]
-#[derive(Copy, Clone)]
+fn t2u64(t: &SystemTime) -> u64 {
+    t.duration_since(UNIX_EPOCH).unwrap().as_secs()
+}
+
+fn u642t(v: u64) -> SystemTime {
+    UNIX_EPOCH.checked_add(Duration::new(v, 0)).unwrap()
+}
+
+#[derive(Debug)]
 pub struct Ckpt {
     pub redo: Lsn,
     pub curtli: TimeLineID,
@@ -90,64 +100,40 @@ pub struct Ckpt {
     pub nextoid: Oid,
     pub time: SystemTime,
 }
-const CKPTLEN: usize = size_of::<Ckpt>();
 
 #[repr(C, packed(1))]
-#[derive(Copy, Clone)]
-pub struct Ctl {
-    pub ctlver: u32,
-    pub catver: u32,
-    pub time: SystemTime,
-    pub ckpt: Lsn,
-    pub ckptcpy: Ckpt,
-    pub crc32c: u32,
+struct CkptSer {
+    redo: u64,
+    curtli: u32,
+    prevtli: u32,
+    nextxid: u64,
+    nextoid: u32,
+    time: u64,
 }
-const CTLLEN: usize = size_of::<Ctl>();
+const CKPTLEN: usize = size_of::<CkptSer>();
 
-pub const KB_CTL_VER: u32 = 20130203;
-pub const KB_CAT_VER: u32 = 20181218;
-pub const CONTROL_FILE: &'static str = "global/kb_control";
-
-impl Ctl {
-    pub fn new(ckpt: Lsn, ckptcpy: Ckpt) -> Ctl {
-        let mut ctl = Ctl {
-            ctlver: KB_CTL_VER,
-            catver: KB_CAT_VER,
-            time: SystemTime::now(),
-            ckpt,
-            ckptcpy,
-            crc32c: 0,
-        };
-        let crc = ctl.cal_crc32c();
-        ctl.crc32c = crc;
-        ctl
-    }
-
-    pub fn cal_crc32c(&self) -> u32 {
-        let crc = unsafe {
-            let ptr = self as *const Ctl as *const u8;
-            let len = offset_of!(Ctl, crc32c);
-            let d = std::slice::from_raw_parts(ptr, len);
-            crc32c::crc32c(d)
-        };
-        crc
-    }
-
-    pub fn persist(&self) -> anyhow::Result<()> {
-        unsafe {
-            let ptr = self as *const _ as *const u8;
-            let d = std::slice::from_raw_parts(ptr, CTLLEN);
-            persist(CONTROL_FILE, d)
+impl From<&Ckpt> for CkptSer {
+    fn from(v: &Ckpt) -> CkptSer {
+        CkptSer {
+            redo: v.redo.get(),
+            curtli: v.curtli.get(),
+            prevtli: v.prevtli.get(),
+            nextxid: v.nextxid.get(),
+            nextoid: v.nextoid.get(),
+            time: t2u64(&v.time),
         }
     }
+}
 
-    pub fn load() -> anyhow::Result<Ctl> {
-        let mut d = Vec::with_capacity(CTLLEN);
-        File::open(CONTROL_FILE)?.read_to_end(&mut d)?;
-        if d.len() != CTLLEN {
-            Err(anyhow!("load: invalid control file. len={}", d.len()))
-        } else {
-            Ok(unsafe { std::ptr::read(d.as_ptr() as *const Ctl) })
+impl From<&CkptSer> for Ckpt {
+    fn from(v: &CkptSer) -> Ckpt {
+        Ckpt {
+            redo: Lsn::new(v.redo).unwrap(),
+            curtli: TimeLineID::new(v.curtli).unwrap(),
+            prevtli: TimeLineID::new(v.prevtli).unwrap(),
+            nextxid: Xid::new(v.nextxid).unwrap(),
+            nextoid: Oid::new(v.nextoid).unwrap(),
+            time: u642t(v.time),
         }
     }
 }
@@ -155,31 +141,158 @@ impl Ctl {
 pub fn new_ckpt_rec(ckpt: &Ckpt) -> Vec<u8> {
     let mut record = Vec::with_capacity(RECHDRLEN + CKPTLEN);
     record.resize(RECHDRLEN, 0);
+    let ckptser: CkptSer = ckpt.into();
     unsafe {
-        let ptr = ckpt as *const _ as *const u8;
+        let ptr = &ckptser as *const _ as *const u8;
         let d = std::slice::from_raw_parts(ptr, CKPTLEN);
         record.extend_from_slice(d);
     }
     record
 }
 
-trait Rmgr {
+fn get_ckpt(recdata: &[u8]) -> Ckpt {
+    unsafe { (&*(recdata.as_ptr() as *const CkptSer)).into() }
+}
+
+pub const KB_CTL_VER: u32 = 20130203;
+pub const KB_CAT_VER: u32 = 20181218;
+const CONTROL_FILE: &'static str = "global/kb_control";
+
+#[derive(Debug)]
+pub struct Ctl {
+    pub time: SystemTime,
+    pub ckpt: Lsn,
+    pub ckptcpy: Ckpt,
+}
+
+#[repr(C, packed(1))]
+struct CtlSer {
+    ctlver: u32,
+    catver: u32,
+    time: u64,
+    ckpt: u64,
+    ckptcpy: CkptSer,
+    crc32c: u32,
+}
+
+const CTLLEN: usize = size_of::<CtlSer>();
+
+impl CtlSer {
+    fn cal_crc32c(&self) -> u32 {
+        unsafe {
+            let ptr = self as *const _ as *const u8;
+            let len = offset_of!(CtlSer, crc32c);
+            let d = std::slice::from_raw_parts(ptr, len);
+            crc32c::crc32c(d)
+        }
+    }
+
+    fn persist(&self) -> anyhow::Result<()> {
+        unsafe {
+            let ptr = self as *const _ as *const u8;
+            let d = std::slice::from_raw_parts(ptr, CTLLEN);
+            persist(CONTROL_FILE, d)
+        }
+    }
+
+    fn load() -> anyhow::Result<CtlSer> {
+        let mut d = Vec::with_capacity(CTLLEN);
+        File::open(CONTROL_FILE)?.read_to_end(&mut d)?;
+        if d.len() != CTLLEN {
+            Err(anyhow!("load: invalid control file. len={}", d.len()))
+        } else {
+            let ctl = unsafe { std::ptr::read(d.as_ptr() as *const CtlSer) };
+            if ctl.ctlver != KB_CTL_VER {
+                let v = ctl.ctlver;
+                return Err(anyhow!("load: unexpected ctlver={}", v));
+            }
+            if ctl.catver != KB_CAT_VER {
+                let v = ctl.catver;
+                return Err(anyhow!("load: unexpected catver={}", v));
+            }
+            let v1 = ctl.cal_crc32c();
+            if ctl.crc32c != v1 {
+                let v = ctl.crc32c;
+                return Err(anyhow!(
+                    "load: unexpected crc32c. actual={} expected={}",
+                    v,
+                    v1
+                ));
+            }
+            Ok(ctl)
+        }
+    }
+}
+impl Ctl {
+    pub fn new(ckpt: Lsn, ckptcpy: Ckpt) -> Ctl {
+        Ctl {
+            time: SystemTime::now(),
+            ckpt,
+            ckptcpy,
+        }
+    }
+
+    pub fn persist(&self) -> anyhow::Result<()> {
+        let v: CtlSer = self.into();
+        v.persist()
+    }
+
+    pub fn load() -> anyhow::Result<Ctl> {
+        let ctlser = CtlSer::load()?;
+        Ok((&ctlser).into())
+    }
+}
+
+impl From<&Ctl> for CtlSer {
+    fn from(v: &Ctl) -> Self {
+        let mut ctlser = CtlSer {
+            ctlver: KB_CTL_VER,
+            catver: KB_CAT_VER,
+            time: t2u64(&v.time),
+            ckpt: v.ckpt.get(),
+            ckptcpy: (&v.ckptcpy).into(),
+            crc32c: 0,
+        };
+        ctlser.crc32c = ctlser.cal_crc32c();
+        ctlser
+    }
+}
+
+impl From<&CtlSer> for Ctl {
+    fn from(ctlser: &CtlSer) -> Ctl {
+        Ctl {
+            time: u642t(ctlser.time),
+            ckpt: Lsn::new(ctlser.ckpt).unwrap(),
+            ckptcpy: (&ctlser.ckptcpy).into(),
+        }
+    }
+}
+
+pub trait Rmgr {
     fn name(&self) -> &'static str;
-    fn redo(&mut self, record: &[u8]);
-    fn desc(&self, out: &mut String, record: &[u8]);
-    fn descstr(&self, record: &[u8]) -> String {
+    fn redo(&mut self, hdr: &RecordHdr, data: &[u8]) -> anyhow::Result<()>;
+    fn desc(&self, out: &mut String, hdr: &RecordHdr, data: &[u8]);
+    fn descstr(&self, hdr: &RecordHdr, data: &[u8]) -> String {
         let mut s = String::new();
-        self.desc(&mut s, record);
+        self.desc(&mut s, hdr, data);
         s
     }
 }
 
 #[repr(u8)]
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum RmgrId {
     Xlog,
-    Xact,
-    Total,
+}
+
+impl From<u8> for RmgrId {
+    fn from(v: u8) -> Self {
+        if v == RmgrId::Xlog as u8 {
+            RmgrId::Xlog
+        } else {
+            panic!("try from u8 to RmgrId failed. value={}", v)
+        }
+    }
 }
 
 pub trait WalStorageFile {
@@ -217,9 +330,9 @@ impl WalStorage for LocalWalStorage {
 }
 
 pub struct WalReader {
-    storage: Box<dyn WalStorage>,
-    readlsn: Option<Lsn>,
-    endlsn: Lsn,
+    pub storage: Box<dyn WalStorage>,
+    pub readlsn: Option<Lsn>,
+    pub endlsn: Lsn,
     file: Option<Box<dyn WalStorageFile>>,
 }
 
@@ -232,8 +345,12 @@ impl WalReader {
         todo!()
     }
 
-    pub fn read_record(&mut self) -> anyhow::Result<&[u8]> {
+    pub fn read_record(&mut self) -> anyhow::Result<(RecordHdr, &[u8])> {
         todo!()
+    }
+
+    pub fn endtli(&self) -> TimeLineID {
+        TimeLineID::new(1).unwrap()
     }
 }
 
@@ -354,16 +471,14 @@ impl Drop for WritingWalFile {
     }
 }
 
-#[repr(C, packed(1))]
+#[derive(Copy, Clone)]
 pub struct RecordHdr {
     pub totlen: u32,
     pub info: u8,
     pub id: RmgrId,
     pub xid: Option<Xid>,
     pub prev: Option<Lsn>,
-    pub crc32c: u32,
 }
-pub const RECHDRLEN: usize = size_of::<RecordHdr>();
 
 impl RecordHdr {
     pub fn rmgr_info(&self) -> u8 {
@@ -371,8 +486,70 @@ impl RecordHdr {
     }
 }
 
-fn mut_hdr(d: &mut [u8]) -> &mut RecordHdr {
-    unsafe { &mut *(d.as_mut_ptr() as *mut RecordHdr) }
+#[repr(C, packed(1))]
+struct RecordHdrSer {
+    totlen: u32,
+    info: u8,
+    id: u8,
+    xid: u64,
+    prev: u64,
+    crc32c: u32,
+}
+const RECHDRLEN: usize = size_of::<RecordHdrSer>();
+
+fn mut_hdr(d: &mut [u8]) -> &mut RecordHdrSer {
+    unsafe { &mut *(d.as_mut_ptr() as *mut RecordHdrSer) }
+}
+
+fn hdr(d: &[u8]) -> &RecordHdrSer {
+    unsafe { &*(d.as_ptr() as *mut RecordHdrSer) }
+}
+
+fn hdr_crc_area(rec: &[u8]) -> &[u8] {
+    &rec[..offset_of!(RecordHdrSer, crc32c)]
+}
+
+fn data_area(rec: &[u8]) -> &[u8] {
+    &rec[RECHDRLEN..]
+}
+
+impl std::convert::From<&RecordHdrSer> for RecordHdr {
+    fn from(f: &RecordHdrSer) -> Self {
+        RecordHdr {
+            totlen: f.totlen,
+            info: f.info,
+            id: f.id.into(),
+            xid: Xid::new(f.xid),
+            prev: Lsn::new(f.prev),
+        }
+    }
+}
+
+fn check_rec(d: &[u8]) -> anyhow::Result<(RecordHdr, &[u8])> {
+    if d.len() < RECHDRLEN {
+        return Err(anyhow!("check_rec: record too small. len={}", d.len()));
+    }
+    let data = data_area(d);
+    let crc = crc32c::crc32c(data);
+    let crc = crc32c::crc32c_append(crc, hdr_crc_area(d));
+    let h = hdr(d);
+    let totlen = h.totlen;
+    if totlen as usize != d.len() {
+        return Err(anyhow!(
+            "check_rec: invalid len. expected={} actual={}",
+            totlen,
+            d.len()
+        ));
+    }
+    let crc32c = h.crc32c;
+    if crc32c != crc {
+        return Err(anyhow!(
+            "check_rec: invalid crc. expected={} actual={}",
+            crc,
+            crc32c
+        ));
+    }
+    Ok((h.into(), data))
 }
 
 pub fn finish_record(d: &mut [u8], id: RmgrId, info: u8, xid: Option<Xid>) {
@@ -383,13 +560,17 @@ pub fn finish_record(d: &mut [u8], id: RmgrId, info: u8, xid: Option<Xid>) {
             len, id, info, xid
         );
     }
-    let crc = crc32c::crc32c(&d[RECHDRLEN..]);
+    let crc = crc32c::crc32c(data_area(d));
     let len = len as u32;
     let hdr = mut_hdr(d);
     hdr.totlen = len;
     hdr.info = info;
-    hdr.id = id;
-    hdr.xid = xid;
+    hdr.id = id as u8;
+    hdr.xid = match xid {
+        None => 0,
+        Some(x) => x.get(),
+    };
+    hdr.prev = 0;
     hdr.crc32c = crc;
     return;
 }
@@ -466,10 +647,12 @@ impl InsertState {
 
     fn fill_record(record: &mut RecordBuff, prevlsn: Option<Lsn>) {
         let hdr = mut_hdr(record.as_mut_slice());
-        hdr.prev = prevlsn;
+        hdr.prev = match prevlsn {
+            None => 0,
+            Some(p) => p.get(),
+        };
         let bodycrc = hdr.crc32c;
-        let crc =
-            crc32c::crc32c_append(bodycrc, &record.as_slice()[..offset_of!(RecordHdr, crc32c)]);
+        let crc = crc32c::crc32c_append(bodycrc, hdr_crc_area(record));
         let hdr = mut_hdr(record.as_mut_slice());
         hdr.crc32c = crc;
     }
@@ -706,19 +889,50 @@ pub fn init(
 #[repr(u8)]
 #[derive(Copy, Clone, Debug)]
 pub enum XlogInfo {
-    NextOid = 0x30,
     Ckpt = 0x10,
 }
 
-impl TryFrom<u8> for XlogInfo {
-    type Error = anyhow::Error;
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        if value == XlogInfo::NextOid as u8 {
-            Ok(XlogInfo::NextOid)
-        } else if value == XlogInfo::Ckpt as u8 {
-            Ok(XlogInfo::Ckpt)
+impl From<u8> for XlogInfo {
+    fn from(value: u8) -> Self {
+        if value == XlogInfo::Ckpt as u8 {
+            XlogInfo::Ckpt
         } else {
-            Err(anyhow!("try from u8 to XlogInfo failed. value={}", value))
+            panic!("try from u8 to XlogInfo failed. value={}", value)
+        }
+    }
+}
+
+pub struct XlogRmgr<'a> {
+    state: &'a RefCell<RedoState>,
+}
+
+impl XlogRmgr<'_> {
+    pub fn new(state: &RefCell<RedoState>) -> XlogRmgr {
+        XlogRmgr { state }
+    }
+}
+
+impl Rmgr for XlogRmgr<'_> {
+    fn name(&self) -> &'static str {
+        "XLOG"
+    }
+
+    fn redo(&mut self, hdr: &RecordHdr, data: &[u8]) -> anyhow::Result<()> {
+        match hdr.rmgr_info().into() {
+            XlogInfo::Ckpt => {
+                let ckpt = get_ckpt(data);
+                self.state.borrow_mut().set_nextxid(ckpt.nextxid);
+                Ok(())
+            }
+        }
+    }
+
+    fn desc(&self, out: &mut String, hdr: &RecordHdr, data: &[u8]) {
+        match hdr.rmgr_info().into() {
+            XlogInfo::Ckpt => {
+                let ckpt = get_ckpt(data);
+                write!(out, "CHECKPOINT {:?}", ckpt).unwrap();
+            }
         }
     }
 }

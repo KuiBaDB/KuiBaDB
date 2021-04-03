@@ -21,6 +21,7 @@ use std::net::TcpStream;
 use std::rc::Rc;
 
 pub mod clog;
+pub mod redo;
 mod slru;
 pub mod wal;
 

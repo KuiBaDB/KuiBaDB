@@ -548,7 +548,8 @@ pub struct GlobalState {
     pub gucstate: Arc<guc::GucState>,
     pub worker_cache: &'static ThreadLocal<RefCell<WorkerCache>>,
     pub wal: Option<&'static wal::GlobalStateExt>,
-    pub oid_creator: Option<&'static AtomicU32>,
+    pub oid_creator: Option<&'static AtomicU32>, // nextoid
+    pub xid_creator: Option<&'static AtomicU64>, // nextxid
 }
 
 impl GlobalState {
@@ -560,6 +561,7 @@ impl GlobalState {
             gucstate: gucstate,
             worker_cache: Box::leak(Box::new(ThreadLocal::new())),
             oid_creator: None,
+            xid_creator: None,
             wal: None,
         }
     }
@@ -570,11 +572,6 @@ impl GlobalState {
         guc::load_apply_gucs("kuiba.conf", Arc::make_mut(&mut gucstate)).unwrap();
         GlobalState::new(gucstate)
     }
-}
-
-pub fn redo(datadir: &str) -> anyhow::Result<GlobalState> {
-    let mut g = GlobalState::init(datadir);
-    Ok(g)
 }
 
 #[cfg(test)]

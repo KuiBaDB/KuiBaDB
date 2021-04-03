@@ -17,7 +17,7 @@ use crate::{get_errcode, guc, protocol, GlobalState};
 use anyhow::anyhow;
 use std::cell::RefCell;
 use std::debug_assert;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Write;
 use std::net::TcpStream;
 use std::num::NonZeroU16;

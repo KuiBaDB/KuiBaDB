@@ -19,7 +19,6 @@ use kuiba::utils::Xid;
 use kuiba::*;
 use log;
 use sqlite;
-use std::mem::{size_of, transmute};
 use std::time::SystemTime;
 use std::vec::Vec;
 
@@ -887,8 +886,8 @@ fn create_ctl(gucstate: &guc::GucState) -> anyhow::Result<()> {
         curtli: tli,
         prevtli: tli,
         redo: lsn,
-        nextxid: Xid::new(1).unwrap(),
-        nextoid: Oid::new(1).unwrap(),
+        nextxid: Xid::new(2).unwrap(),
+        nextoid: Oid::new(65536).unwrap(),
         time: SystemTime::now(),
     };
     let mut rec = wal::new_ckpt_rec(&ckpt);
