@@ -17,21 +17,23 @@ use crc32c;
 use log;
 use memoffset::offset_of;
 use nix::libc::off_t;
-use nix::sys::uio::IoVec;
+use nix::sys::uio::{pread, IoVec};
 use nix::unistd::SysconfVar::IOV_MAX;
 use std::cell::RefCell;
 use std::cmp::min;
 use std::convert::{From, Into};
 use std::fmt::Write;
-use std::fs::{File, OpenOptions};
+use std::fs::{self, read_dir, File, OpenOptions};
 use std::io::Read;
 use std::mem::size_of;
 use std::num::{NonZeroU32, NonZeroU64};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::thread::panicking;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{debug_assert, debug_assert_eq};
 
 #[cfg(target_os = "linux")]
 fn pwritev(fd: RawFd, iov: &[IoVec<&[u8]>], offset: off_t) -> nix::Result<usize> {
@@ -296,14 +298,74 @@ impl From<u8> for RmgrId {
 }
 
 pub trait WalStorageFile {
-    fn pread(&self, buf: &mut [u8], offset: usize) -> anyhow::Result<usize>;
-    fn len(&self) -> usize;
+    fn pread(&self, buf: &mut [u8], offset: u64) -> anyhow::Result<usize>;
+    fn len(&self) -> u64;
+}
+
+pub trait WalStorageWalFile: WalStorageFile {
     fn lsn(&self) -> Lsn;
+    fn tli(&self) -> TimeLineID;
+}
+
+struct LocalWalStorageFile {
+    // Use BufReader<R>~
+    file: File,
+    filelen: u64,
+}
+
+impl LocalWalStorageFile {
+    fn new(file: File, filelen: u64) -> LocalWalStorageFile {
+        LocalWalStorageFile { file, filelen }
+    }
+}
+
+impl WalStorageFile for LocalWalStorageFile {
+    fn pread(&self, buf: &mut [u8], offset: u64) -> anyhow::Result<usize> {
+        Ok(pread(self.file.as_raw_fd(), buf, offset as off_t)?)
+    }
+
+    fn len(&self) -> u64 {
+        self.filelen
+    }
+}
+
+struct LocalWalStorageWalFile {
+    file: LocalWalStorageFile,
+    lsn: Lsn,
+}
+
+impl LocalWalStorageWalFile {
+    fn new(file: File, len: u64, lsn: Lsn) -> LocalWalStorageWalFile {
+        LocalWalStorageWalFile {
+            file: LocalWalStorageFile::new(file, len),
+            lsn,
+        }
+    }
+}
+
+impl WalStorageFile for LocalWalStorageWalFile {
+    fn pread(&self, buf: &mut [u8], offset: u64) -> anyhow::Result<usize> {
+        self.file.pread(buf, offset)
+    }
+    fn len(&self) -> u64 {
+        self.file.filelen
+    }
+}
+
+impl WalStorageWalFile for LocalWalStorageWalFile {
+    fn lsn(&self) -> Lsn {
+        self.lsn
+    }
+    fn tli(&self) -> TimeLineID {
+        TimeLineID::new(1).unwrap()
+    }
 }
 
 pub trait WalStorage {
-    fn find(&self, lsn: Lsn) -> anyhow::Result<Option<String>>;
-    fn open(&mut self, key: &str) -> anyhow::Result<Box<dyn WalStorageFile>>;
+    fn find(&self, lsn: Lsn) -> anyhow::Result<(TimeLineID, Lsn)>;
+    // fn open(&mut self, key: &str) -> anyhow::Result<Box<dyn WalStorageFile>>;
+    fn open_wal(&mut self, tli: TimeLineID, lsn: Lsn)
+        -> anyhow::Result<Box<dyn WalStorageWalFile>>;
     fn recycle(&mut self, lsn: Lsn) -> anyhow::Result<()>;
 }
 
@@ -311,21 +373,88 @@ pub struct LocalWalStorage {}
 
 impl LocalWalStorage {
     pub fn new() -> LocalWalStorage {
-        todo!()
+        LocalWalStorage {}
     }
 }
 
+fn lsn_in_file(filelsn: Lsn, len: u64, lsn: Lsn) -> bool {
+    let lsn = lsn.get();
+    let filelsn = filelsn.get();
+    // shouldn't use lsn < (filelsn + len), filelsn + len may overflow.
+    lsn >= filelsn && (lsn - filelsn) < len
+}
+
 impl WalStorage for LocalWalStorage {
-    fn find(&self, lsn: Lsn) -> anyhow::Result<Option<String>> {
-        todo!()
+    fn find(&self, lsn: Lsn) -> anyhow::Result<(TimeLineID, Lsn)> {
+        for direntry in read_dir("kb_wal")? {
+            let direntry = direntry?;
+            let name = direntry.file_name();
+            let name = name.as_os_str().as_bytes();
+            if !is_wal(&name) {
+                continue;
+            }
+            let (tli, filelsn) = parse_wal_filename(name);
+            if tli.get() != 1 {
+                continue;
+            }
+            let meta = direntry.metadata()?;
+            debug_assert!(meta.is_file());
+            let filelen = meta.len();
+            if lsn_in_file(filelsn, filelen, lsn) {
+                return Ok((tli, filelsn));
+            }
+        }
+        return Err(anyhow!(
+            "LocalWalStorage::find:  can not find the expected wal file. lsn={}",
+            lsn
+        ));
     }
 
-    fn open(&mut self, key: &str) -> anyhow::Result<Box<dyn WalStorageFile>> {
-        todo!()
+    fn open_wal(
+        &mut self,
+        tli: TimeLineID,
+        lsn: Lsn,
+    ) -> anyhow::Result<Box<dyn WalStorageWalFile>> {
+        let file = File::open(wal_filepath(tli, lsn))?;
+        let filelen = file.metadata()?.len();
+        Ok(Box::new(LocalWalStorageWalFile::new(file, filelen, lsn)))
     }
 
     fn recycle(&mut self, lsn: Lsn) -> anyhow::Result<()> {
-        todo!()
+        for direntry in read_dir("kb_wal")? {
+            let direntry = direntry?;
+            let name = direntry.file_name();
+            let name = name.as_os_str().as_bytes();
+            if !is_wal(&name) {
+                continue;
+            }
+            let (tli, filelsn) = parse_wal_filename(name);
+            if tli.get() != 1 {
+                continue;
+            }
+            if filelsn >= lsn {
+                let path = direntry.path();
+                log::info!(
+                    "LocalWalStorage::recycle: remove wal file. path={:?} lsn={}",
+                    path,
+                    lsn
+                );
+                fs::remove_file(direntry.path())?;
+                continue;
+            }
+            let meta = direntry.metadata()?;
+            debug_assert!(meta.is_file());
+            let filelen = meta.len();
+            let lsnlen = lsn.get() - filelsn.get();
+            if lsnlen >= filelen {
+                continue;
+            }
+            let path = direntry.path();
+            log::info!("LocalWalStorage::recycle: truncate wal file. path={:?} lsn={} filelen={} lsnlen={}", path, lsn, filelen, lsnlen);
+            let file = OpenOptions::new().write(true).open(path)?;
+            file.set_len(lsnlen)?;
+        }
+        Ok(())
     }
 }
 
@@ -333,20 +462,86 @@ pub struct WalReader {
     pub storage: Box<dyn WalStorage>,
     pub readlsn: Option<Lsn>,
     pub endlsn: Lsn,
-    file: Option<Box<dyn WalStorageFile>>,
+    file: Option<Box<dyn WalStorageWalFile>>,
 }
 
 impl WalReader {
     pub fn new(storage: Box<dyn WalStorage>, startlsn: Lsn) -> WalReader {
-        todo!()
+        WalReader {
+            storage,
+            readlsn: None,
+            endlsn: startlsn,
+            file: None,
+        }
     }
 
-    pub fn rescan(&mut self, startlsn: Lsn) {
-        todo!()
+    pub fn rescan(&mut self, _startlsn: Lsn) {
+        unimplemented!()
     }
 
-    pub fn read_record(&mut self) -> anyhow::Result<(RecordHdr, &[u8])> {
-        todo!()
+    fn open_file(&mut self) -> anyhow::Result<u64> {
+        let mut endlsn_is_filelsn = false;
+        if let Some(ref file) = self.file {
+            let filelsn = file.lsn();
+            let filelen = file.len();
+            if self.endlsn >= filelsn {
+                let endlsnlen = self.endlsn.get() - filelsn.get();
+                if endlsnlen < filelen {
+                    return Ok(endlsnlen);
+                }
+                if endlsnlen == filelen {
+                    endlsn_is_filelsn = true;
+                }
+            }
+        }
+        let (tli, filelsn, endlsnlen) = if endlsn_is_filelsn {
+            (TimeLineID::new(1).unwrap(), self.endlsn, 0 as u64)
+        } else {
+            let (tli, filelsn) = self.storage.find(self.endlsn)?;
+            (tli, filelsn, self.endlsn.get() - filelsn.get())
+        };
+        self.file = Some(self.storage.open_wal(tli, filelsn)?);
+        Ok(endlsnlen)
+    }
+
+    pub fn read_record(&mut self) -> anyhow::Result<(RecordHdr, Vec<u8>)> {
+        let recoff = self.open_file()?;
+        let file = self.file.as_ref().unwrap();
+        let mut hdrbytes = [0; RECHDRLEN];
+        let hdrlen = file.pread(&mut hdrbytes, recoff)?;
+        if hdrlen != RECHDRLEN {
+            return Err(anyhow!("WalReader::read_record: cannot read RecordHdr. readlen={} filetli={} filelsn={} filelen={} recoff={}",
+                hdrlen, file.tli(), file.lsn(), file.len(), recoff));
+        }
+        let rechdrser = hdr(&hdrbytes);
+        let rechdr: RecordHdr = rechdrser.into();
+        if let Some(prevlsn) = self.readlsn {
+            if let Some(recprevlsn) = rechdr.prev {
+                if prevlsn != recprevlsn {
+                    return Err(anyhow!("WalReader::read_record: unexpected prevlsn. expected={} actual={} filetli={} filelsn={} filelen={} recoff={}", prevlsn, recprevlsn, file.tli(), file.lsn(), file.len(), recoff));
+                }
+            } else {
+                return Err(anyhow!("WalReader::read_record: no prevlsn. expected={} filetli={} filelsn={} filelen={} recoff={}", prevlsn, file.tli(), file.lsn(), file.len(), recoff));
+            }
+        }
+        let recdatlen = rechdr.totlen as usize - RECHDRLEN;
+        let mut databytes = Vec::<u8>::with_capacity(recdatlen);
+        databytes.resize(recdatlen, 0); // there is no need to do the zeroing.
+        let readlen = file.pread(&mut databytes, recoff + RECHDRLEN as u64)?;
+        if recdatlen != readlen {
+            return Err(anyhow!("WalReader::read_record: cannot read data. readlen={} reclen={} filetli={} filelsn={} filelen={} recoff={}",
+                readlen, recdatlen, file.tli(), file.lsn(), file.len(), recoff));
+        }
+        let crc = crc32c::crc32c(&databytes);
+        let crc = crc32c::crc32c_append(crc, hdr_crc_area(&hdrbytes));
+        let actual_crc = rechdrser.crc32c;
+        if actual_crc != crc {
+            return Err(anyhow!("WalReader::read_record: unexpected crc. expected={} actual={} filetli={} filelsn={} filelen={} recoff={}",
+                crc, actual_crc, file.tli(), file.lsn(), file.len(), recoff));
+        }
+        self.readlsn = Some(self.endlsn);
+        self.endlsn = Lsn::new(self.endlsn.get() + rechdr.totlen as u64).unwrap();
+        Ok((rechdr, databytes))
     }
 
     pub fn endtli(&self) -> TimeLineID {
@@ -407,8 +602,49 @@ struct WritingWalFile {
     flush: &'static Progress,
 }
 
+const WAL_FILENAME_LEN: usize = 8 + 16 + 4;
 fn wal_filepath(tli: TimeLineID, lsn: Lsn) -> String {
     format!("kb_wal/{:0>8X}{:0>16X}.wal", tli, lsn)
+}
+
+fn is_wal(filename: &[u8]) -> bool {
+    filename.len() == WAL_FILENAME_LEN && filename.ends_with(&[b'.', b'w', b'a', b'l'])
+}
+
+fn parse_tli(v: &[u8]) -> TimeLineID {
+    debug_assert_eq!(v.len(), 8);
+    let n = u32::from_str_radix(std::str::from_utf8(v).unwrap(), 16).unwrap();
+    TimeLineID::new(n).unwrap()
+}
+
+fn parse_lsn(v: &[u8]) -> Lsn {
+    debug_assert_eq!(v.len(), 16);
+    let n = u64::from_str_radix(std::str::from_utf8(v).unwrap(), 16).unwrap();
+    Lsn::new(n).unwrap()
+}
+
+fn parse_wal_filename(filename: &[u8]) -> (TimeLineID, Lsn) {
+    debug_assert!(is_wal(filename));
+    (parse_tli(&filename[..8]), parse_lsn(&filename[8..24]))
+}
+
+#[cfg(test)]
+mod parse_wal_filepath_test {
+    use super::{parse_wal_filename, wal_filepath, Lsn, TimeLineID};
+    #[test]
+    fn f() {
+        let tli = TimeLineID::new(0x20181218).unwrap();
+        let lsn = Lsn::new(0x2013020320181218).unwrap();
+        let fp = wal_filepath(tli, lsn);
+        assert_eq!(fp, "kb_wal/201812182013020320181218.wal");
+        assert_eq!(parse_wal_filename(&fp.as_bytes()[7..]), (tli, lsn));
+
+        let tli = TimeLineID::new(1).unwrap();
+        let lsn = Lsn::new(20181218).unwrap();
+        let fp = wal_filepath(tli, lsn);
+        assert_eq!(fp, "kb_wal/00000001000000000133F0E2.wal");
+        assert_eq!(parse_wal_filename(&fp.as_bytes()[7..]), (tli, lsn));
+    }
 }
 
 impl WritingWalFile {
@@ -523,33 +759,6 @@ impl std::convert::From<&RecordHdrSer> for RecordHdr {
             prev: Lsn::new(f.prev),
         }
     }
-}
-
-fn check_rec(d: &[u8]) -> anyhow::Result<(RecordHdr, &[u8])> {
-    if d.len() < RECHDRLEN {
-        return Err(anyhow!("check_rec: record too small. len={}", d.len()));
-    }
-    let data = data_area(d);
-    let crc = crc32c::crc32c(data);
-    let crc = crc32c::crc32c_append(crc, hdr_crc_area(d));
-    let h = hdr(d);
-    let totlen = h.totlen;
-    if totlen as usize != d.len() {
-        return Err(anyhow!(
-            "check_rec: invalid len. expected={} actual={}",
-            totlen,
-            d.len()
-        ));
-    }
-    let crc32c = h.crc32c;
-    if crc32c != crc {
-        return Err(anyhow!(
-            "check_rec: invalid crc. expected={} actual={}",
-            crc,
-            crc32c
-        ));
-    }
-    Ok((h.into(), data))
 }
 
 pub fn finish_record(d: &mut [u8], id: RmgrId, info: u8, xid: Option<Xid>) {

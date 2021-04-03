@@ -54,9 +54,12 @@ pub fn redo(datadir: &str) -> anyhow::Result<GlobalState> {
                 if let Some(x) = h.xid {
                     redo_state.borrow_mut().seen_xid(x);
                 }
-                rmgrlist[h.id as u8 as usize].redo(&h, data)?;
+                rmgrlist[h.id as u8 as usize].redo(&h, &data)?;
             }
         }
+    }
+    if walreader.endlsn <= ctl.ckpt {
+        return Err(anyhow!("redo: quit early. endlsn={}", walreader.endlsn));
     }
     let redo_state = redo_state.into_inner();
     log::info!(

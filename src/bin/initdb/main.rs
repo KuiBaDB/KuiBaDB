@@ -893,8 +893,7 @@ fn create_ctl(gucstate: &guc::GucState) -> anyhow::Result<()> {
     let mut rec = wal::new_ckpt_rec(&ckpt);
     wal::finish_record(&mut rec, wal::RmgrId::Xlog, wal::XlogInfo::Ckpt as u8, None);
 
-    let lsn = wals.insert_record(rec);
-    wals.fsync(lsn);
+    wals.fsync(wals.insert_record(rec));
 
     let ctl = wal::Ctl::new(lsn, ckpt);
     ctl.persist()
