@@ -14,9 +14,7 @@ use crate::catalog::namespace::SessionExt as NamespaceSessionExt;
 use crate::catalog::{get_proc, FormOperator};
 use crate::datumblock::DatumBlockSingle;
 use crate::utils::{AttrNumber, SessionState, TypLen, TypMod};
-use crate::{protocol, ErrCode};
-use crate::{Oid, OptOid, FLOAT8OID, INT4OID, INT8OID, VARCHAROID};
-use anyhow::{anyhow, Context};
+use crate::{kbbail, Oid, OptOid, FLOAT8OID, INT4OID, INT8OID, VARCHAROID};
 use std::convert::TryInto;
 use std::debug_assert;
 use std::mem::size_of;
@@ -191,8 +189,11 @@ fn make_op(
     };
     let oprcode = match op.oprcode.0 {
         None => {
-            return Err(anyhow!("operator is only a shell. op={}", op.oid))
-                .context(ErrCode(protocol::ERRCODE_UNDEFINED_FUNCTION))
+            kbbail!(
+                ERRCODE_UNDEFINED_FUNCTION,
+                "operator is only a shell. op={}",
+                op.oid
+            );
         }
         Some(v) => v,
     };

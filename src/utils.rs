@@ -10,10 +10,11 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-use crate::access::clog;
+use self::err::ErrCtx;
+use crate::access::{clog, xact};
 use crate::catalog::namespace::SessionStateExt as NameSpaceSessionStateExt;
 use crate::Oid;
-use crate::{get_errcode, guc, protocol, GlobalState};
+use crate::{guc, protocol, GlobalState};
 use anyhow::anyhow;
 use std::cell::RefCell;
 use std::debug_assert;
@@ -26,6 +27,7 @@ use std::sync::{atomic::AtomicBool, Arc};
 use tempfile::NamedTempFile;
 use thread_local::ThreadLocal;
 
+pub mod err;
 pub mod fmgr;
 
 pub struct Worker {
@@ -78,6 +80,15 @@ impl WorkerState {
     }
 }
 
+fn format_err(err: &anyhow::Error) -> (String, Option<&ErrCtx>) {
+    if let Some(errctx) = err.downcast_ref::<ErrCtx>() {
+        let errmsg = format!("{} rootcause={}", errctx, err.root_cause());
+        return (errmsg, Some(errctx));
+    } else {
+        return (format!("{}", err), None);
+    }
+}
+
 pub struct SessionState {
     pub worker_cache: &'static ThreadLocal<RefCell<WorkerCache>>,
     pub clog: clog::WorkerStateExt,
@@ -88,6 +99,7 @@ pub struct SessionState {
     pub termreq: Arc<AtomicBool>,
     pub gucstate: Arc<guc::GucState>,
     pub metaconn: sqlite::Connection,
+    pub xact: Option<&'static xact::GlobalStateExt>,
 
     pub dead: bool,
     pub nsstate: NameSpaceSessionStateExt,
@@ -113,6 +125,7 @@ impl SessionState {
             dead: false,
             nsstate: NameSpaceSessionStateExt::default(),
             clog: clog::WorkerStateExt::new(gstate.clog),
+            xact: gstate.xact,
             worker_cache: gstate.worker_cache,
         }
     }
@@ -123,14 +136,13 @@ impl SessionState {
     }
 
     pub fn on_error(err: &anyhow::Error, stream: &mut TcpStream) {
-        // We dont want a multi-line log.
-        // and `{:?}` will only display the context saved in err!
-        let errmsg = format!("{:#?}", err).replace("\n", " ");
-        SessionState::error(
-            get_errcode(err),
-            &format!("session error. err={}", errmsg),
-            stream,
-        );
+        let (errmsg, errctx) = format_err(err);
+        let errcode = if let Some(errctx) = errctx {
+            errctx.code
+        } else {
+            protocol::ERRCODE_INTERNAL_ERROR
+        };
+        SessionState::error(errcode, &format!("session error. err={}", errmsg), stream);
     }
 }
 

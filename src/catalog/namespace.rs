@@ -14,9 +14,7 @@ use crate::catalog::{get_oper, get_opers, FormOperator};
 use crate::guc;
 use crate::parser::syn;
 use crate::utils::SessionState;
-use crate::{protocol, ErrCode};
-use crate::{Oid, OptOid};
-use anyhow::{anyhow, Context};
+use crate::{kbanyhow, kbbail, Oid, OptOid};
 use std::sync::Arc;
 
 #[derive(Default)]
@@ -60,8 +58,10 @@ impl SessionExt for SessionState {
         let (nspname, name) = self.deconstruct_qualname(names)?;
         let nspoid = match nspname {
             None => {
-                return Err(anyhow!("no schema has been selected to create in"))
-                    .context(ErrCode(protocol::ERRCODE_UNDEFINED_SCHEMA))
+                kbbail!(
+                    ERRCODE_UNDEFINED_SCHEMA,
+                    "no schema has been selected to create in"
+                );
             }
             Some(nspname) => self.get_namespace_oid(nspname)?,
         };
@@ -79,18 +79,18 @@ impl SessionExt for SessionState {
                 if self.db == &*names[0] {
                     Ok((Some(&*names[1]), &*names[2]))
                 } else {
-                    Err(anyhow!(
+                    Err(kbanyhow!(
+                        ERRCODE_FEATURE_NOT_SUPPORTED,
                         "cross-database references are not implemented: {:?}",
                         names
                     ))
-                    .context(ErrCode(protocol::ERRCODE_FEATURE_NOT_SUPPORTED))
                 }
             }
-            _ => Err(anyhow!(
+            _ => Err(kbanyhow!(
+                ERRCODE_SYNTAX_ERROR,
                 "improper qualified name (too many dotted names): {:?}",
                 names
-            ))
-            .context(ErrCode(protocol::ERRCODE_SYNTAX_ERROR)),
+            )),
         }
     }
 
@@ -145,12 +145,12 @@ impl SessionExt for SessionState {
             }
         }
         let oprleft: u32 = oprleft.into();
-        Err(anyhow!(
+        kbbail!(
+            ERRCODE_UNDEFINED_FUNCTION,
             "operator does not exist. name={} left={} right={}",
             opername,
             oprleft,
             oprright
-        ))
-        .context(ErrCode(protocol::ERRCODE_UNDEFINED_FUNCTION))
+        );
     }
 }

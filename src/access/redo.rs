@@ -1,7 +1,7 @@
-use crate::access::wal;
 use crate::access::wal::{Ctl, LocalWalStorage, Rmgr, WalReader, XlogRmgr};
+use crate::access::{wal, xact};
 use crate::utils::Xid;
-use crate::{GlobalState, Oid};
+use crate::{make_static, GlobalState, Oid};
 use anyhow::anyhow;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU32, AtomicU64};
@@ -69,12 +69,8 @@ pub fn redo(datadir: &str) -> anyhow::Result<GlobalState> {
     );
 
     walreader.storage.recycle(walreader.endlsn)?;
-    g.oid_creator = Some(Box::leak(Box::new(AtomicU32::new(
-        redo_state.nextoid.get(),
-    ))));
-    g.xid_creator = Some(Box::leak(Box::new(AtomicU64::new(
-        redo_state.nextxid.get(),
-    ))));
+    g.oid_creator = Some(make_static(AtomicU32::new(redo_state.nextoid.get())));
+    g.xid_creator = Some(make_static(AtomicU64::new(redo_state.nextxid.get())));
     let readlsn = match walreader.readlsn {
         None => return Err(anyhow!("walreader.readlsn is None")),
         Some(r) => r,
@@ -86,5 +82,6 @@ pub fn redo(datadir: &str) -> anyhow::Result<GlobalState> {
         ctl.ckptcpy.redo,
         &g.gucstate,
     )?);
+    g.xact = Some(make_static(xact::GlobalStateExt::new(redo_state.nextxid)));
     Ok(g)
 }

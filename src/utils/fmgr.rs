@@ -12,8 +12,7 @@
 use crate::datumblock::{DatumBlock, DatumBlockSingle};
 use crate::utils::WorkerState;
 use crate::Oid;
-use crate::{protocol, ErrCode};
-use anyhow::{anyhow, Context};
+use crate::{kbanyhow, kbbail};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -79,8 +78,10 @@ fn int4pl(
     let (l, r) = i32_2args(args);
     let (r, overflow) = l.overflowing_add(r);
     if overflow {
-        Err(anyhow!("integer out of range"))
-            .context(ErrCode(protocol::ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE))
+        Err(kbanyhow!(
+            ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE,
+            "integer out of range"
+        ))
     } else {
         single_i32(r)
     }
@@ -94,8 +95,10 @@ fn int4mi(
     let (l, r) = i32_2args(args);
     let (r, overflow) = l.overflowing_sub(r);
     if overflow {
-        Err(anyhow!("integer out of range"))
-            .context(ErrCode(protocol::ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE))
+        Err(kbanyhow!(
+            ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE,
+            "integer out of range"
+        ))
     } else {
         single_i32(r)
     }
@@ -109,8 +112,10 @@ fn int4mul(
     let (l, r) = i32_2args(args);
     let (r, overflow) = l.overflowing_mul(r);
     if overflow {
-        Err(anyhow!("integer out of range"))
-            .context(ErrCode(protocol::ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE))
+        Err(kbanyhow!(
+            ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE,
+            "integer out of range"
+        ))
     } else {
         single_i32(r)
     }
@@ -123,13 +128,14 @@ fn int4div(
 ) -> anyhow::Result<Rc<DatumBlock>> {
     let (l, r) = i32_2args(args);
     if r == 0 {
-        return Err(anyhow!("division by zero"))
-            .context(ErrCode(protocol::ERRCODE_DIVISION_BY_ZERO));
+        kbbail!(ERRCODE_DIVISION_BY_ZERO, "division by zero");
     }
     let (r, overflow) = l.overflowing_div(r);
     if overflow {
-        Err(anyhow!("integer out of range"))
-            .context(ErrCode(protocol::ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE))
+        Err(kbanyhow!(
+            ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE,
+            "integer out of range"
+        ))
     } else {
         single_i32(r)
     }
@@ -149,9 +155,10 @@ pub fn get_fmgr_builtins() -> FmgrBuiltinsMap {
 
 pub fn get_fn_addr(oid: Oid, map: &FmgrBuiltinsMap) -> anyhow::Result<KBFunction> {
     map.get(&oid)
-        .ok_or(
-            anyhow!("internal function {} is not in internal lookup table", oid)
-                .context(ErrCode(protocol::ERRCODE_UNDEFINED_FUNCTION)),
-        )
+        .ok_or(kbanyhow!(
+            ERRCODE_UNDEFINED_FUNCTION,
+            "internal function {} is not in internal lookup table",
+            oid
+        ))
         .map(|v| *v)
 }

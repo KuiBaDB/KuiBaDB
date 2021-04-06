@@ -10,8 +10,8 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-use access::{clog, wal};
-use anyhow;
+use access::{clog, wal, xact, xact::SessionExt as xact_sess_ext};
+use anyhow::Context;
 use log;
 use rand;
 use static_assertions::const_assert;
@@ -441,20 +441,6 @@ pub fn postgres_main(global_state: GlobalState, mut streamv: TcpStream, sessid: 
     }
 }
 
-#[derive(Debug)]
-struct ErrCode(&'static str);
-
-impl std::fmt::Display for ErrCode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-fn get_errcode(err: &anyhow::Error) -> &'static str {
-    err.downcast_ref::<ErrCode>()
-        .map_or(protocol::ERRCODE_INTERNAL_ERROR, |v| v.0)
-}
-
 fn write_str_response(resp: &utility::StrResp, stream: &mut TcpStream) {
     protocol::write_message(
         stream,
@@ -504,40 +490,35 @@ fn exec_optimizable(
     Ok(())
 }
 
-fn exec_simple_query(query: &str, session: &mut SessionState, stream: &mut TcpStream) {
-    log::info!("receive query. {}", query.replace("\n", " "));
-    let ast = match parser::parse(query) {
-        Ok(v) => v,
-        Err(err) => {
-            SessionState::error(
-                protocol::ERRCODE_SYNTAX_ERROR,
-                &format!("parse query failed. err={}", err),
-                stream,
-            );
-            return;
-        }
-    };
+fn do_exec_simple_query(
+    query: &str,
+    session: &mut SessionState,
+    stream: &mut TcpStream,
+) -> anyhow::Result<()> {
+    // We dont want a multi-line log.
+    log::info!("receive query. {}", query /* .replace("\n", " ") */);
+    let ast = parser::parse(query)
+        .with_context(|| errctx!(ERRCODE_SYNTAX_ERROR, "parse query failed"))?;
     log::trace!("parse query. ast={:?}", ast);
     if let parser::syn::Stmt::Empty = ast {
         protocol::write_message(stream, &protocol::EmptyQueryResponse {});
-        return;
+        return Ok(());
     }
-
-    let query = match parser::sem::kb_analyze(session, &ast) {
-        Ok(v) => v,
-        Err(ref err) => {
-            SessionState::on_error(err, stream);
-            return;
-        }
-    };
-
-    let ret = match query {
+    let query = parser::sem::kb_analyze(session, &ast)?;
+    match query {
         parser::sem::Stmt::Utility(ref stmt) => exec_utility(stmt, session, stream),
         parser::sem::Stmt::Optimizable(ref stmt) => exec_optimizable(stmt, session, stream),
-    };
-    if let Err(ref err) = ret {
+    }
+}
+
+fn exec_simple_query(query: &str, session: &mut SessionState, stream: &mut TcpStream) {
+    if let Err(ref err) = do_exec_simple_query(query, session, stream) {
         SessionState::on_error(err, stream);
     }
+}
+
+fn make_static<T>(v: T) -> &'static T {
+    Box::leak(Box::new(v))
 }
 
 #[derive(Clone)]
@@ -548,6 +529,7 @@ pub struct GlobalState {
     pub gucstate: Arc<guc::GucState>,
     pub worker_cache: &'static ThreadLocal<RefCell<WorkerCache>>,
     pub wal: Option<&'static wal::GlobalStateExt>,
+    pub xact: Option<&'static xact::GlobalStateExt>,
     pub oid_creator: Option<&'static AtomicU32>, // nextoid
     pub xid_creator: Option<&'static AtomicU64>, // nextxid
 }
@@ -555,14 +537,15 @@ pub struct GlobalState {
 impl GlobalState {
     fn new(gucstate: Arc<guc::GucState>) -> GlobalState {
         GlobalState {
-            fmgr_builtins: Box::leak(Box::new(utils::fmgr::get_fmgr_builtins())),
-            cancelmap: Box::leak(Box::new(Mutex::<CancelMap>::default())),
-            clog: Box::leak(Box::new(clog::init(&gucstate))),
+            fmgr_builtins: make_static(utils::fmgr::get_fmgr_builtins()),
+            cancelmap: make_static(Mutex::<CancelMap>::default()),
+            clog: make_static(clog::init(&gucstate)),
             gucstate: gucstate,
-            worker_cache: Box::leak(Box::new(ThreadLocal::new())),
+            worker_cache: make_static(ThreadLocal::new()),
             oid_creator: None,
             xid_creator: None,
             wal: None,
+            xact: None,
         }
     }
 

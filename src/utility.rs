@@ -12,8 +12,7 @@ limitations under the License.
 */
 use crate::commands::typecmds::define_type;
 use crate::parser::{sem, syn};
-use crate::{guc, protocol, ErrCode, SessionState};
-use anyhow::{anyhow, Context};
+use crate::{guc, kbanyhow, kbbail, SessionState};
 use std::sync::Arc;
 
 pub struct StrResp {
@@ -43,8 +42,10 @@ fn to_bool(val: &syn::Value) -> anyhow::Result<bool> {
     match val {
         syn::Value::Num(v) => match v {
             &syn::NumVal::Int(v) => Ok(v != 0),
-            &syn::NumVal::Float { .. } => Err(anyhow!("requires a Boolean value"))
-                .context(ErrCode(protocol::ERRCODE_INVALID_PARAMETER_VALUE)),
+            &syn::NumVal::Float { .. } => Err(kbanyhow!(
+                ERRCODE_INVALID_PARAMETER_VALUE,
+                "requires a Boolean value"
+            )),
         },
         syn::Value::Str(v) => Ok(v.eq_ignore_ascii_case("on") || v.eq_ignore_ascii_case("true")),
     }
@@ -85,7 +86,7 @@ fn set_guc(stmt: &syn::VariableSetStmt, state: &mut SessionState) -> anyhow::Res
     let gucidx = match guc::get_gucidx(gucname) {
         Some(v) => v,
         None => {
-            return Err(anyhow!("unknown guc")).context(ErrCode(protocol::ERRCODE_UNDEFINED_OBJECT))
+            kbbail!(ERRCODE_UNDEFINED_OBJECT, "unknown guc");
         }
     };
     let gucstate = Arc::make_mut(&mut state.gucstate);
@@ -118,7 +119,7 @@ fn get_guc(stmt: &syn::VariableShowStmt, state: &SessionState) -> anyhow::Result
     let gucidx = match guc::get_gucidx(gucname) {
         Some(v) => v,
         None => {
-            return Err(anyhow!("unknown guc")).context(ErrCode(protocol::ERRCODE_UNDEFINED_OBJECT))
+            kbbail!(ERRCODE_UNDEFINED_OBJECT, "unknown guc");
         }
     };
     let generic = guc::get_guc_generic(gucidx);

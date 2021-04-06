@@ -36,3 +36,6 @@ anyhow = "1.0"
 [build-dependencies.lalrpop]
 version = "0.19"
 features = ["lexer"]
+
+[profile.release]
+panic = 'abort'

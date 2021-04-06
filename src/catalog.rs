@@ -11,9 +11,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 use crate::utils::{SessionState, TypLen};
-use crate::{protocol, ErrCode};
-use crate::{Oid, OptOid};
-use anyhow::{anyhow, Context};
+use crate::{kbanyhow, Oid, OptOid};
 
 pub mod namespace;
 
@@ -84,14 +82,14 @@ fn get_oper(
         }
     }
     let oprleft: u32 = oprleft.into();
-    Err(anyhow!(
+    Err(kbanyhow!(
+        ERRCODE_UNDEFINED_FUNCTION,
         "operator does not exist. name={} left={} right={} nsp={}",
         oprname,
         oprleft,
         oprright,
         oprnamespace
     ))
-    .context(ErrCode(protocol::ERRCODE_UNDEFINED_FUNCTION))
 }
 
 fn get_opers(
@@ -177,8 +175,11 @@ pub struct FormProc {
 }
 
 pub fn get_proc(state: &SessionState, oid: Oid) -> anyhow::Result<FormProc> {
-    let mut ret: anyhow::Result<FormProc> = Err(anyhow!("function does not exist. oid={}", oid))
-        .context(ErrCode(protocol::ERRCODE_UNDEFINED_FUNCTION));
+    let mut ret: anyhow::Result<FormProc> = Err(kbanyhow!(
+        ERRCODE_UNDEFINED_FUNCTION,
+        "function does not exist. oid={}",
+        oid
+    ));
     state.metaconn.iterate(format!("select pronamespace, prokind, provolatile, prorettype, prosrc, probin from kb_proc where oid = {}", oid), |row| {
         ret = Ok(FormProc {
             oid: oid,
@@ -201,7 +202,11 @@ struct FormType {
 }
 
 fn get_type(state: &SessionState, oid: Oid) -> anyhow::Result<FormType> {
-    let mut ret: anyhow::Result<FormType> = Err(anyhow!("lookup failed for type {}", oid));
+    let mut ret: anyhow::Result<FormType> = Err(kbanyhow!(
+        ERRCODE_UNDEFINED_OBJECT,
+        "lookup failed for type {}",
+        oid
+    ));
     state.metaconn.iterate(
         format!(
             "select typoutput, typisdefined, typlen from kb_type where oid = {}",
@@ -230,8 +235,11 @@ fn get_type(state: &SessionState, oid: Oid) -> anyhow::Result<FormType> {
 pub fn get_type_output_info(state: &SessionState, oid: Oid) -> anyhow::Result<(Oid, TypLen)> {
     let formtype = get_type(state, oid)?;
     if !formtype.typisdefined {
-        Err(anyhow!("type {} is only a shell", oid))
-            .context(ErrCode(protocol::ERRCODE_UNDEFINED_OBJECT))
+        Err(kbanyhow!(
+            ERRCODE_UNDEFINED_OBJECT,
+            "type {} is only a shell",
+            oid
+        ))
     } else {
         Ok((formtype.typoutput, formtype.typlen))
     }

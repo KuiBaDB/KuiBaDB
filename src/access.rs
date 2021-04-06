@@ -24,6 +24,7 @@ pub mod clog;
 pub mod redo;
 mod slru;
 pub mod wal;
+pub mod xact;
 
 pub struct DestRemote<'sess> {
     session: &'sess SessionState,

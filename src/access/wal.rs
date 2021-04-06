@@ -11,7 +11,7 @@
 use crate::access::redo::RedoState;
 use crate::guc::{self, GucState};
 use crate::utils::{persist, Xid};
-use crate::Oid;
+use crate::{make_static, Oid};
 use anyhow::anyhow;
 use crc32c;
 use log;
@@ -581,16 +581,6 @@ impl Progress {
     }
 }
 
-struct AbortWhenPanic;
-
-impl Drop for AbortWhenPanic {
-    fn drop(&mut self) {
-        if panicking() {
-            std::process::abort();
-        }
-    }
-}
-
 // The lsn for the first record is 0x0133F0E2
 pub type Lsn = NonZeroU64;
 pub type TimeLineID = NonZeroU32;
@@ -930,9 +920,9 @@ impl GlobalStateExt {
         wal_buff_max_size: usize,
         wal_file_max_size: u64,
     ) -> std::io::Result<&'static GlobalStateExt> {
-        let flush: &'static Progress = Box::leak(Box::new(Progress::new(lsn.get())));
-        let write: &'static Progress = Box::leak(Box::new(Progress::new(lsn.get())));
-        Ok(Box::leak(Box::new(GlobalStateExt {
+        let flush: &'static Progress = make_static(Progress::new(lsn.get()));
+        let write: &'static Progress = make_static(Progress::new(lsn.get()));
+        Ok(make_static(GlobalStateExt {
             redo: AtomicU64::new(redo.get()),
             write,
             flush,
@@ -948,7 +938,7 @@ impl GlobalStateExt {
                 forcesync: false,
                 file: Some(Arc::new(WritingWalFile::new(tli, lsn, write, flush)?)),
             }),
-        })))
+        }))
     }
 
     fn get_insert_state(&self) -> MutexGuard<InsertState> {
@@ -996,7 +986,6 @@ impl GlobalStateExt {
     }
 
     pub fn insert_record(&self, r: RecordBuff) -> Lsn {
-        let _guard = AbortWhenPanic;
         let insert_res = {
             let mut state = self.get_insert_state();
             state.insert(r)
@@ -1005,7 +994,6 @@ impl GlobalStateExt {
     }
 
     pub fn try_insert_record(&self, r: RecordBuff, page_lsn: Lsn) -> Option<Lsn> {
-        let _guard = AbortWhenPanic;
         let insert_res = {
             let mut state = self.get_insert_state();
             if page_lsn <= state.redo {
@@ -1061,7 +1049,6 @@ impl GlobalStateExt {
     }
 
     pub fn fsync(&self, lsn: Lsn) {
-        let _guard = AbortWhenPanic;
         let lsnval = lsn.get();
         if lsnval <= self.flush.get() {
             return;
