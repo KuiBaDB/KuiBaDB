@@ -8,16 +8,13 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use chrono::offset::Local;
-use chrono::DateTime;
 use kuiba::access::wal;
 
 fn main() {
     let ctl = wal::Ctl::load().unwrap();
-    let t: DateTime<Local> = ctl.time.into();
     println!("kb_control version number: {}", wal::KB_CTL_VER);
     println!("Catalog version number: {}", wal::KB_CAT_VER);
-    println!("kb_control last modified: {:?}", t);
+    println!("kb_control last modified: {:?}", ctl.time);
     let ckpt = ctl.ckpt;
     println!("Latest checkpoint location: {}", ckpt);
     let v = ctl.ckptcpy.redo;
@@ -30,6 +27,5 @@ fn main() {
     println!("Latest checkpoint's NextXID: {}", v);
     let v = ctl.ckptcpy.nextoid;
     println!("Latest checkpoint's NextOID: {}", v);
-    let v: DateTime<Local> = ctl.ckptcpy.time.into();
-    println!("Time of latest checkpoint: {:?}", v);
+    println!("Time of latest checkpoint: {:?}", ctl.ckptcpy.time);
 }

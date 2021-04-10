@@ -30,6 +30,28 @@
 -   [x] Add crash recovery.
 -   [x] Add xact system
 
+    ```
+    2021-04-10T10:35:19.424402+08:00 - INFO - start redo. ctl=Ctl { time: 2021-04-03T22:55:14+08:00, ckpt: 20181218, ckptcpy: Ckpt { redo: 20181218, curtli: 1, prevtli: 1, nextxid: 2, nextoid: 65536, time: 2021-04-03T22:55:14+08:00 } }
+    2021-04-10T10:35:19.554540+08:00 - INFO - end redo because of failed read. endlsn=20711748 endtli=1 err=No such file or directory (os error 2)
+    2021-04-10T10:35:19.554693+08:00 - INFO - End of redo. nextxid: 15604, nextoid: 65536
+    2021-04-10T10:35:19.555442+08:00 - INFO - listen. port=1218
+
+    kuiba=# begin;
+    BEGIN
+    kuiba=# select 1;
+    1
+    kuiba=# commit;
+    COMMIT
+    kuiba=# begin;
+    BEGIN
+    kuiba=# select 1;
+    1
+    kuiba=# select x;
+    ERROR:  parse query failed: Parse Error. UnrecognizedToken { token: (7, Token(16, "x"), 8), expected: ["\"(\"", "\"+\"", "\"-\"", "\";\"", "DECIMAL", "INTEGER", "XB"] }
+    kuiba=# commit;
+    ROLLBACK
+    ```
+
 -   [ ] Add columnar storage
 
 -   [ ] Add Copy

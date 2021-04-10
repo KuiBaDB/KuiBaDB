@@ -10,7 +10,7 @@
 // limitations under the License.
 use crate::access::redo::RedoState;
 use crate::guc::{self, GucState};
-use crate::utils::{persist, t2u64, u642t, Xid};
+use crate::utils::{persist, KBSystemTime, Xid};
 use crate::{make_static, Oid};
 use anyhow::anyhow;
 use crc32c;
@@ -31,7 +31,6 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::thread::panicking;
-use std::time::SystemTime;
 use std::{debug_assert, debug_assert_eq};
 
 #[cfg(target_os = "linux")]
@@ -91,7 +90,7 @@ pub struct Ckpt {
     pub prevtli: TimeLineID,
     pub nextxid: Xid,
     pub nextoid: Oid,
-    pub time: SystemTime,
+    pub time: KBSystemTime,
 }
 
 #[repr(C, packed(1))]
@@ -112,7 +111,7 @@ impl From<&Ckpt> for CkptSer {
             prevtli: v.prevtli.get(),
             nextxid: v.nextxid.get(),
             nextoid: v.nextoid.get(),
-            time: t2u64(v.time),
+            time: v.time.into(),
         }
     }
 }
@@ -125,7 +124,7 @@ impl From<&CkptSer> for Ckpt {
             prevtli: TimeLineID::new(v.prevtli).unwrap(),
             nextxid: Xid::new(v.nextxid).unwrap(),
             nextoid: Oid::new(v.nextoid).unwrap(),
-            time: u642t(v.time),
+            time: v.time.into(),
         }
     }
 }
@@ -145,7 +144,7 @@ const CONTROL_FILE: &'static str = "global/kb_control";
 
 #[derive(Debug)]
 pub struct Ctl {
-    pub time: SystemTime,
+    pub time: KBSystemTime,
     pub ckpt: Lsn,
     pub ckptcpy: Ckpt,
 }
@@ -211,7 +210,7 @@ impl CtlSer {
 impl Ctl {
     pub fn new(ckpt: Lsn, ckptcpy: Ckpt) -> Ctl {
         Ctl {
-            time: SystemTime::now(),
+            time: KBSystemTime::now(),
             ckpt,
             ckptcpy,
         }
@@ -233,7 +232,7 @@ impl From<&Ctl> for CtlSer {
         let mut ctlser = CtlSer {
             ctlver: KB_CTL_VER,
             catver: KB_CAT_VER,
-            time: t2u64(v.time),
+            time: v.time.into(),
             ckpt: v.ckpt.get(),
             ckptcpy: (&v.ckptcpy).into(),
             crc32c: 0,
@@ -246,7 +245,7 @@ impl From<&Ctl> for CtlSer {
 impl From<&CtlSer> for Ctl {
     fn from(ctlser: &CtlSer) -> Ctl {
         Ctl {
-            time: u642t(ctlser.time),
+            time: ctlser.time.into(),
             ckpt: Lsn::new(ctlser.ckpt).unwrap(),
             ckptcpy: (&ctlser.ckptcpy).into(),
         }

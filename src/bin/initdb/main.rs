@@ -15,11 +15,10 @@ limitations under the License.
 
 use clap::{App, Arg};
 use kuiba::access::wal;
-use kuiba::utils::Xid;
+use kuiba::utils::{KBSystemTime, Xid};
 use kuiba::*;
 use log;
 use sqlite;
-use std::time::SystemTime;
 use std::vec::Vec;
 
 struct Attr {
@@ -888,7 +887,7 @@ fn create_ctl(gucstate: &guc::GucState) -> anyhow::Result<()> {
         redo: lsn,
         nextxid: Xid::new(2).unwrap(),
         nextoid: Oid::new(65536).unwrap(),
-        time: SystemTime::now(),
+        time: KBSystemTime::now(),
     };
     let mut rec = wal::new_ckpt_rec(&ckpt);
     wal::finish_record(&mut rec, wal::RmgrId::Xlog, wal::XlogInfo::Ckpt as u8, None);

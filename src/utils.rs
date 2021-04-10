@@ -19,7 +19,6 @@ use chrono::offset::Local;
 use chrono::DateTime;
 use std::cell::RefCell;
 use std::debug_assert;
-use std::fmt::Write as fmt_writer;
 use std::fs::File;
 use std::io::Write;
 use std::net::TcpStream;
@@ -95,7 +94,7 @@ pub struct SessionState {
     pub metaconn: sqlite::Connection,
     pub xact: xact::SessionStateExt,
     pub wal: Option<&'static wal::GlobalStateExt>,
-    pub stmt_startts: SystemTime,
+    pub stmt_startts: KBSystemTime,
     pub dead: bool,
     pub nsstate: NameSpaceSessionStateExt,
 }
@@ -109,7 +108,7 @@ impl SessionState {
         metaconn: sqlite::Connection,
         gstate: GlobalState,
     ) -> Self {
-        let now = SystemTime::now();
+        let now = KBSystemTime::now();
         Self {
             sessid,
             reqdb,
@@ -121,7 +120,7 @@ impl SessionState {
             dead: false,
             nsstate: NameSpaceSessionStateExt::default(),
             clog: clog::WorkerStateExt::new(gstate.clog),
-            stmt_startts: now,
+            stmt_startts: now.into(),
             xact: xact::SessionStateExt::new(gstate.xact, now),
             wal: gstate.wal,
             worker_cache: gstate.worker_cache,
@@ -140,7 +139,7 @@ impl SessionState {
     }
 
     pub fn update_stmt_startts(&mut self) {
-        self.stmt_startts = SystemTime::now();
+        self.stmt_startts = KBSystemTime::now();
     }
     pub fn new_worker(&self) -> Worker {
         Worker::new(WorkerState::new(self))
@@ -236,21 +235,50 @@ pub fn persist<P: AsRef<Path>>(file: P, d: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn t2u64(t: SystemTime) -> u64 {
-    t.duration_since(UNIX_EPOCH).unwrap().as_secs()
+// just for implementing Display trait
+#[derive(Clone, Copy)]
+pub struct KBSystemTime(SystemTime);
+
+impl std::fmt::Display for KBSystemTime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let t: DateTime<Local> = self.0.into();
+        write!(f, "{}", t)
+    }
 }
 
-pub fn u642t(v: u64) -> SystemTime {
-    UNIX_EPOCH.checked_add(Duration::new(v, 0)).unwrap()
+impl std::fmt::Debug for KBSystemTime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let t: DateTime<Local> = self.0.into();
+        write!(f, "{:?}", t)
+    }
 }
 
-pub fn write_ts(str: &mut String, t: SystemTime) {
-    let t: DateTime<Local> = t.into();
-    write!(str, "{:?}", t).unwrap();
+impl std::convert::From<SystemTime> for KBSystemTime {
+    fn from(v: SystemTime) -> Self {
+        Self(v)
+    }
 }
 
-pub fn t2s(t: SystemTime) -> String {
-    let mut s = String::new();
-    write_ts(&mut s, t);
-    return s;
+impl std::convert::From<KBSystemTime> for SystemTime {
+    fn from(v: KBSystemTime) -> Self {
+        v.0
+    }
+}
+
+impl KBSystemTime {
+    pub fn now() -> Self {
+        Self(SystemTime::now())
+    }
+}
+
+impl std::convert::From<u64> for KBSystemTime {
+    fn from(v: u64) -> Self {
+        UNIX_EPOCH.checked_add(Duration::new(v, 0)).unwrap().into()
+    }
+}
+
+impl std::convert::From<KBSystemTime> for u64 {
+    fn from(v: KBSystemTime) -> Self {
+        v.0.duration_since(UNIX_EPOCH).unwrap().as_secs()
+    }
 }

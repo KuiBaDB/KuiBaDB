@@ -11,14 +11,13 @@
 use super::clog::{WorkerExt as clog_worker_ext, XidStatus};
 use super::redo::RedoState;
 use super::wal::{self, Lsn, RecordHdr, Rmgr, RmgrId};
-use crate::utils::{dec_xid, inc_xid, t2u64, u642t, write_ts, SessionState, Xid};
+use crate::utils::{dec_xid, inc_xid, KBSystemTime, SessionState, Xid};
 use anyhow::{anyhow, bail};
 use log;
 use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::Write;
 use std::sync::{atomic::AtomicU32, atomic::Ordering::Relaxed, RwLock};
-use std::time::SystemTime;
 
 struct BTreeMultiSet<T: Ord> {
     d: BTreeMap<T, u32>,
@@ -234,7 +233,7 @@ struct TranCtx {
     xid: Option<Xid>,
     state: TranState,
     block_state: TBlockState,
-    startts: SystemTime,
+    startts: KBSystemTime,
 }
 
 pub struct SessionStateExt {
@@ -245,7 +244,7 @@ pub struct SessionStateExt {
 }
 
 impl SessionStateExt {
-    pub fn new(xact: Option<&'static GlobalStateExt>, startts: SystemTime) -> Self {
+    pub fn new(xact: Option<&'static GlobalStateExt>, startts: KBSystemTime) -> Self {
         Self {
             xact,
             tranctx: TranCtx {
@@ -260,8 +259,9 @@ impl SessionStateExt {
     }
 }
 
+#[derive(Debug)]
 struct XactRec {
-    xact_endts: SystemTime,
+    xact_endts: KBSystemTime,
 }
 
 #[repr(C, packed(1))]
@@ -272,7 +272,7 @@ struct XactRecSer {
 impl std::convert::From<&XactRec> for XactRecSer {
     fn from(v: &XactRec) -> Self {
         Self {
-            xact_endts: t2u64(v.xact_endts),
+            xact_endts: v.xact_endts.into(),
         }
     }
 }
@@ -280,7 +280,7 @@ impl std::convert::From<&XactRec> for XactRecSer {
 impl std::convert::From<&XactRecSer> for XactRec {
     fn from(v: &XactRecSer) -> Self {
         Self {
-            xact_endts: u642t(v.xact_endts),
+            xact_endts: v.xact_endts.into(),
         }
     }
 }
@@ -322,7 +322,7 @@ fn tctx(sess: &mut SessionState) -> &mut TranCtx {
     &mut sctx(sess).tranctx
 }
 
-fn log_xact_rec(sess: &mut SessionState, xact_endts: SystemTime, info: XactInfo) {
+fn log_xact_rec(sess: &mut SessionState, xact_endts: KBSystemTime, info: XactInfo) {
     let commit_rec = XactRec { xact_endts };
     let commit_rec_ser: XactRecSer = (&commit_rec).into();
     let rec = wal::start_record(&commit_rec_ser);
@@ -330,7 +330,7 @@ fn log_xact_rec(sess: &mut SessionState, xact_endts: SystemTime, info: XactInfo)
     return;
 }
 
-fn log_commit_rec(sess: &mut SessionState, commit_time: SystemTime) {
+fn log_commit_rec(sess: &mut SessionState, commit_time: KBSystemTime) {
     log_xact_rec(sess, commit_time, XactInfo::Commit);
     return;
 }
@@ -339,7 +339,7 @@ fn record_tran_commit(sess: &mut SessionState) {
     if tctx(sess).xid.is_some() {
         // stop_delay_ckpt() must be called!
         gctx(sess).start_delay_ckpt();
-        log_commit_rec(sess, SystemTime::now());
+        log_commit_rec(sess, KBSystemTime::now());
     }
     if let Some(lsn) = sctx(sess).last_rec_end {
         sess.wal.unwrap().fsync(lsn);
@@ -361,7 +361,7 @@ fn record_tran_abort(sess: &mut SessionState) -> anyhow::Result<()> {
         if get_xid_status(sess, xid)? == XidStatus::Committed {
             panic!("cannot abort transaction {}, it was already committed", xid);
         }
-        log_xact_rec(sess, SystemTime::now(), XactInfo::Abort);
+        log_xact_rec(sess, KBSystemTime::now(), XactInfo::Abort);
         sess.clog.set_xid_status(xid, XidStatus::Aborted).unwrap();
     }
     sctx(sess).last_rec_end = None;
@@ -655,13 +655,11 @@ impl Rmgr for XactRmgr {
         match hdr.rmgr_info().into() {
             XactInfo::Commit => {
                 let xact = get_xact_rec(data);
-                write!(out, "COMMIT ").unwrap();
-                write_ts(out, xact.xact_endts);
+                write!(out, "COMMIT {:?}", xact).unwrap();
             }
             XactInfo::Abort => {
                 let xact = get_xact_rec(data);
-                write!(out, "ABORT ").unwrap();
-                write_ts(out, xact.xact_endts);
+                write!(out, "ABORT {:?}", xact).unwrap();
             }
         }
     }
