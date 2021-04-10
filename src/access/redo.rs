@@ -1,19 +1,23 @@
 use crate::access::wal::{Ctl, LocalWalStorage, Rmgr, WalReader, XlogRmgr};
-use crate::access::{wal, xact};
-use crate::utils::Xid;
-use crate::{make_static, GlobalState, Oid};
+use crate::access::{wal, wal::RmgrId, xact, xact::XactRmgr};
+use crate::utils::{inc_xid, Worker, Xid};
+use crate::{guc, make_static, GlobalState, Oid, REDO_SESSID};
 use anyhow::anyhow;
-use std::cell::RefCell;
 use std::sync::atomic::{AtomicU32, AtomicU64};
 
 pub struct RedoState {
     nextxid: Xid,
     nextoid: Oid,
+    pub worker: Worker,
 }
 
 impl RedoState {
-    fn new(nextxid: Xid, nextoid: Oid) -> RedoState {
-        RedoState { nextxid, nextoid }
+    fn new(nextxid: Xid, nextoid: Oid, worker: Worker) -> RedoState {
+        RedoState {
+            nextxid,
+            nextoid,
+            worker,
+        }
     }
 
     pub fn set_nextxid(&mut self, nextxid: Xid) {
@@ -26,7 +30,7 @@ impl RedoState {
         if self.nextxid > xid {
             return;
         }
-        self.nextxid = Xid::new(xid.get() + 1).unwrap();
+        self.nextxid = inc_xid(xid);
     }
 }
 
@@ -36,9 +40,11 @@ pub fn redo(datadir: &str) -> anyhow::Result<GlobalState> {
     log::info!("start redo. ctl={:?}", ctl);
 
     let mut walreader = WalReader::new(Box::new(LocalWalStorage::new()), ctl.ckptcpy.redo);
-    let redo_state = RefCell::new(RedoState::new(ctl.ckptcpy.nextxid, ctl.ckptcpy.nextoid));
-    let mut xlogrmgr = XlogRmgr::new(&redo_state);
-    let rmgrlist = [&mut xlogrmgr as &mut dyn Rmgr];
+    let session = g.clone().internal_session(REDO_SESSID).unwrap();
+    let worker = session.new_worker();
+    let mut redo_state = RedoState::new(ctl.ckptcpy.nextxid, ctl.ckptcpy.nextoid, worker);
+    let mut xlogrmgr = XlogRmgr::new();
+    let mut xactrmgr = XactRmgr::new();
     loop {
         match walreader.read_record() {
             Err(e) => {
@@ -52,16 +58,18 @@ pub fn redo(datadir: &str) -> anyhow::Result<GlobalState> {
             }
             Ok((h, data)) => {
                 if let Some(x) = h.xid {
-                    redo_state.borrow_mut().seen_xid(x);
+                    redo_state.seen_xid(x);
                 }
-                rmgrlist[h.id as u8 as usize].redo(&h, &data)?;
+                match h.id {
+                    RmgrId::Xlog => xlogrmgr.redo(&h, &data, &mut redo_state)?,
+                    RmgrId::Xact => xactrmgr.redo(&h, &data, &mut redo_state)?,
+                }
             }
         }
     }
     if walreader.endlsn <= ctl.ckpt {
         return Err(anyhow!("redo: quit early. endlsn={}", walreader.endlsn));
     }
-    let redo_state = redo_state.into_inner();
     log::info!(
         "End of redo. nextxid: {}, nextoid: {}",
         redo_state.nextxid,
@@ -82,6 +90,9 @@ pub fn redo(datadir: &str) -> anyhow::Result<GlobalState> {
         ctl.ckptcpy.redo,
         &g.gucstate,
     )?);
-    g.xact = Some(make_static(xact::GlobalStateExt::new(redo_state.nextxid)));
+    g.xact = Some(make_static(xact::GlobalStateExt::new(
+        redo_state.nextxid,
+        guc::get_int(&g.gucstate, guc::XidStopLimit),
+    )));
     Ok(g)
 }

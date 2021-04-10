@@ -102,5 +102,11 @@
   context: KuiBaDB
   short_desc: "The max size of one wal file, unit: bytes"
   boot_val: 1073741824
+- vartype: INT
+  name: xid_stop_limit
+  context: KuiBaDB
+  short_desc: "Sets the number of XIDs before XID wraparound at which we will no longer allow the system to be started"
+  boot_val: 2000000000
+
 
 

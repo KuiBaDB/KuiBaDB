@@ -181,9 +181,10 @@ impl StartupMessage<'_> {
     }
 
     pub fn check_client_encoding(&self, expected: &str) -> bool {
-        self.params
-            .get(&STARTUP_CLIENT_ENCODING)
-            .map_or(false, |v| v.eq_ignore_ascii_case(expected))
+        self.params.get(&STARTUP_CLIENT_ENCODING).map_or(
+            true, /* pgbench don't send STARTUP_CLIENT_ENCODING */
+            |v| v.eq_ignore_ascii_case(expected),
+        )
     }
 }
 

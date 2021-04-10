@@ -25,6 +25,7 @@ pub enum UtilityStmt<'syn, 'input> {
     VariableSet(&'syn syn::VariableSetStmt<'input>),
     VariableShow(&'syn syn::VariableShowStmt<'input>),
     DefineType(&'syn syn::DefineTypeStmt<'input>),
+    Tran(&'syn syn::TranStmt),
 }
 
 #[derive(Debug, Clone)]
@@ -304,6 +305,7 @@ pub fn kb_analyze<'syn, 'input>(
         syn::Stmt::VariableSet(v) => Ok(Stmt::Utility(UtilityStmt::VariableSet(v))),
         syn::Stmt::VariableShow(v) => Ok(Stmt::Utility(UtilityStmt::VariableShow(v))),
         syn::Stmt::DefineType(v) => Ok(Stmt::Utility(UtilityStmt::DefineType(v))),
+        syn::Stmt::Tran(v) => Ok(Stmt::Utility(UtilityStmt::Tran(v))),
         syn::Stmt::Select(v) => {
             let mut pstate = ParseState {
                 sess_state: state,

@@ -28,7 +28,7 @@
 -   [x] Add slru and clog. The clog supports two-levels cache and vectorization.
 -   [x] Add wal. We have moved all the IO operations out of the lock!
 -   [x] Add crash recovery.
--   [ ] Add xact system
+-   [x] Add xact system
 
 -   [ ] Add columnar storage
 
@@ -41,5 +41,14 @@
 -   [ ] Add checkpointer
 
 -   ~~[ ] Rewrite Greenplum based on **KuiBaDB**~~
+
+# Run Test
+
+```
+export KUIBADB_DATADIR=/tmp/kuibadir4test
+./target/debug/initdb  $KUIBADB_DATADIR
+echo 'clog_l2cache_size: 1' >> $KUIBADB_DATADIR/kuiba.conf
+cargo test
+```
 
 Greenplum, Postgres, Rust is all the best!!!

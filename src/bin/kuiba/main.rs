@@ -11,13 +11,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 use clap::{App, Arg};
-use kuiba::{access::redo::redo, guc, init_log, postgres_main};
+use kuiba::{access::redo::redo, guc, init_log, postgres_main, LAST_INTERNAL_SESSID};
 use std::net::TcpListener;
 use std::thread;
 
 fn new_sessid(lastused: &mut u32) -> u32 {
     *lastused += 1;
-    *lastused
+    let v = *lastused;
+    if v <= LAST_INTERNAL_SESSID {
+        panic!("new_sessid: unexpected sessid")
+    } else {
+        v
+    }
 }
 
 fn main() {
@@ -41,7 +46,7 @@ fn main() {
     let port = guc::get_int(&global_state.gucstate, guc::Port) as u16;
     let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
     log::info!("listen. port={}", port);
-    let mut lastused_sessid = 20181218;
+    let mut lastused_sessid = LAST_INTERNAL_SESSID;
     for stream in listener.incoming() {
         let stream = stream.unwrap();
         let global_state = global_state.clone();

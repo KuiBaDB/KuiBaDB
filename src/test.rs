@@ -9,12 +9,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::catalog;
 use crate::utils::{SessionState, Worker, WorkerState};
-use crate::GlobalState;
+use crate::{GlobalState, TEST_SESSID};
 use std::env;
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
 
 mod clog;
 
@@ -28,15 +25,7 @@ lazy_static::lazy_static! {
 }
 
 fn new_session_state(global_state: &GlobalState) -> SessionState {
-    let reqdb = catalog::get_database("kuiba").unwrap();
-    SessionState::new(
-        20181218,
-        reqdb.oid,
-        reqdb.datname,
-        Arc::<AtomicBool>::default(),
-        sqlite::open(format!("base/{}/meta.db", reqdb.oid)).unwrap(),
-        global_state.clone(),
-    )
+    global_state.clone().internal_session(TEST_SESSID).unwrap()
 }
 
 fn new_worker() -> Worker {

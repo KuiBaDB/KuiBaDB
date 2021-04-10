@@ -20,6 +20,14 @@ impl std::fmt::Display for ErrCtx {
     }
 }
 
+pub fn errcode(err: &anyhow::Error) -> &'static str {
+    if let Some(errctx) = err.downcast_ref::<ErrCtx>() {
+        errctx.code
+    } else {
+        crate::protocol::ERRCODE_INTERNAL_ERROR
+    }
+}
+
 #[macro_export]
 macro_rules! errctx {
     ($code:ident, $msg:literal $(,)?) => {

@@ -10,6 +10,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+use crate::access::xact::SessionExt as xact_sess_ext;
 use crate::commands::typecmds::define_type;
 use crate::parser::{sem, syn};
 use crate::{guc, kbanyhow, kbbail, SessionState};
@@ -133,6 +134,28 @@ fn get_guc(stmt: &syn::VariableShowStmt, state: &SessionState) -> anyhow::Result
     })
 }
 
+fn tran(stmt: &syn::TranStmt, state: &mut SessionState) -> anyhow::Result<Response> {
+    const ABORT_TAG: &str = "ROLLBACK";
+    let tag = match stmt {
+        &syn::TranStmt::Begin => {
+            state.begin_tran_block()?;
+            "BEGIN"
+        }
+        &syn::TranStmt::Commit => {
+            if state.end_tran_block()? {
+                "COMMIT"
+            } else {
+                ABORT_TAG
+            }
+        }
+        &syn::TranStmt::Abort => {
+            state.user_abort_tran_block()?;
+            ABORT_TAG
+        }
+    };
+    return Ok(Response { resp: None, tag });
+}
+
 pub fn process_utility(
     stmt: &sem::UtilityStmt,
     state: &mut SessionState,
@@ -141,5 +164,6 @@ pub fn process_utility(
         &sem::UtilityStmt::VariableSet(v) => set_guc(v, state),
         &sem::UtilityStmt::VariableShow(v) => get_guc(v, state),
         &sem::UtilityStmt::DefineType(v) => define_type(v, state),
+        &sem::UtilityStmt::Tran(v) => tran(v, state),
     }
 }

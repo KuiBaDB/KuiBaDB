@@ -10,7 +10,7 @@
 // limitations under the License.
 use crate::access::redo::RedoState;
 use crate::guc::{self, GucState};
-use crate::utils::{persist, Xid};
+use crate::utils::{persist, t2u64, u642t, Xid};
 use crate::{make_static, Oid};
 use anyhow::anyhow;
 use crc32c;
@@ -19,7 +19,6 @@ use memoffset::offset_of;
 use nix::libc::off_t;
 use nix::sys::uio::{pread, IoVec};
 use nix::unistd::SysconfVar::IOV_MAX;
-use std::cell::RefCell;
 use std::cmp::min;
 use std::convert::{From, Into};
 use std::fmt::Write;
@@ -32,7 +31,7 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::thread::panicking;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 use std::{debug_assert, debug_assert_eq};
 
 #[cfg(target_os = "linux")]
@@ -85,14 +84,6 @@ fn pwritevn<'a>(
     Ok((offset - orig_offset) as usize)
 }
 
-fn t2u64(t: &SystemTime) -> u64 {
-    t.duration_since(UNIX_EPOCH).unwrap().as_secs()
-}
-
-fn u642t(v: u64) -> SystemTime {
-    UNIX_EPOCH.checked_add(Duration::new(v, 0)).unwrap()
-}
-
 #[derive(Debug)]
 pub struct Ckpt {
     pub redo: Lsn,
@@ -112,7 +103,6 @@ struct CkptSer {
     nextoid: u32,
     time: u64,
 }
-const CKPTLEN: usize = size_of::<CkptSer>();
 
 impl From<&Ckpt> for CkptSer {
     fn from(v: &Ckpt) -> CkptSer {
@@ -122,7 +112,7 @@ impl From<&Ckpt> for CkptSer {
             prevtli: v.prevtli.get(),
             nextxid: v.nextxid.get(),
             nextoid: v.nextoid.get(),
-            time: t2u64(&v.time),
+            time: t2u64(v.time),
         }
     }
 }
@@ -141,15 +131,8 @@ impl From<&CkptSer> for Ckpt {
 }
 
 pub fn new_ckpt_rec(ckpt: &Ckpt) -> Vec<u8> {
-    let mut record = Vec::with_capacity(RECHDRLEN + CKPTLEN);
-    record.resize(RECHDRLEN, 0);
     let ckptser: CkptSer = ckpt.into();
-    unsafe {
-        let ptr = &ckptser as *const _ as *const u8;
-        let d = std::slice::from_raw_parts(ptr, CKPTLEN);
-        record.extend_from_slice(d);
-    }
-    record
+    return start_record(&ckptser);
 }
 
 fn get_ckpt(recdata: &[u8]) -> Ckpt {
@@ -250,7 +233,7 @@ impl From<&Ctl> for CtlSer {
         let mut ctlser = CtlSer {
             ctlver: KB_CTL_VER,
             catver: KB_CAT_VER,
-            time: t2u64(&v.time),
+            time: t2u64(v.time),
             ckpt: v.ckpt.get(),
             ckptcpy: (&v.ckptcpy).into(),
             crc32c: 0,
@@ -272,7 +255,7 @@ impl From<&CtlSer> for Ctl {
 
 pub trait Rmgr {
     fn name(&self) -> &'static str;
-    fn redo(&mut self, hdr: &RecordHdr, data: &[u8]) -> anyhow::Result<()>;
+    fn redo(&mut self, hdr: &RecordHdr, data: &[u8], state: &mut RedoState) -> anyhow::Result<()>;
     fn desc(&self, out: &mut String, hdr: &RecordHdr, data: &[u8]);
     fn descstr(&self, hdr: &RecordHdr, data: &[u8]) -> String {
         let mut s = String::new();
@@ -285,12 +268,15 @@ pub trait Rmgr {
 #[derive(Debug, Copy, Clone)]
 pub enum RmgrId {
     Xlog,
+    Xact,
 }
 
 impl From<u8> for RmgrId {
     fn from(v: u8) -> Self {
         if v == RmgrId::Xlog as u8 {
             RmgrId::Xlog
+        } else if v == RmgrId::Xact as u8 {
+            RmgrId::Xact
         } else {
             panic!("try from u8 to RmgrId failed. value={}", v)
         }
@@ -751,6 +737,17 @@ impl std::convert::From<&RecordHdrSer> for RecordHdr {
     }
 }
 
+pub fn start_record<T>(val: &T) -> Vec<u8> {
+    let mut record = Vec::<u8>::with_capacity(RECHDRLEN + size_of::<T>());
+    record.resize(RECHDRLEN, 0);
+    unsafe {
+        let ptr = val as *const T as *const u8;
+        let d = std::slice::from_raw_parts(ptr, size_of::<T>());
+        record.extend_from_slice(d);
+    }
+    return record;
+}
+
 pub fn finish_record(d: &mut [u8], id: RmgrId, info: u8, xid: Option<Xid>) {
     let len = d.len();
     if len > u32::MAX as usize || len < RECHDRLEN {
@@ -1098,26 +1095,24 @@ impl From<u8> for XlogInfo {
     }
 }
 
-pub struct XlogRmgr<'a> {
-    state: &'a RefCell<RedoState>,
-}
+pub struct XlogRmgr {}
 
-impl XlogRmgr<'_> {
-    pub fn new(state: &RefCell<RedoState>) -> XlogRmgr {
-        XlogRmgr { state }
+impl XlogRmgr {
+    pub fn new() -> XlogRmgr {
+        XlogRmgr {}
     }
 }
 
-impl Rmgr for XlogRmgr<'_> {
+impl Rmgr for XlogRmgr {
     fn name(&self) -> &'static str {
         "XLOG"
     }
 
-    fn redo(&mut self, hdr: &RecordHdr, data: &[u8]) -> anyhow::Result<()> {
+    fn redo(&mut self, hdr: &RecordHdr, data: &[u8], state: &mut RedoState) -> anyhow::Result<()> {
         match hdr.rmgr_info().into() {
             XlogInfo::Ckpt => {
                 let ckpt = get_ckpt(data);
-                self.state.borrow_mut().set_nextxid(ckpt.nextxid);
+                state.set_nextxid(ckpt.nextxid);
                 Ok(())
             }
         }

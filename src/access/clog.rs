@@ -60,6 +60,7 @@ fn get_xid_status(buff: &[u8], byteno: usize, bidx: u64) -> XidStatus {
     u8_get_xid_status(buff[byteno], bidx)
 }
 
+// use &mut u8 as the storage so that the user can user local [u8] as the storage.
 pub struct VecXidStatus(Vec<u8>);
 
 impl VecXidStatus {
@@ -69,26 +70,16 @@ impl VecXidStatus {
         set_xid_status(&mut self.0, byteno, bidx, status);
     }
 
-    #[cfg(test)]
+    pub fn get_xid_status(&self, idx: usize) -> XidStatus {
+        let byteno = idx / XACTS_PER_BYTE as usize;
+        let bidx = xid_to_bidx(idx as u64);
+        get_xid_status(&self.0, byteno, bidx)
+    }
+
     pub fn new(n: usize) -> VecXidStatus {
         let x = XACTS_PER_BYTE as usize;
         let s = (n + (x - 1)) / x;
         VecXidStatus(vec![0; s]) // use set_len to avoid zeroing.
-    }
-
-    #[cfg(test)]
-    pub fn split(val: u8) -> [XidStatus; XACTS_PER_BYTE as usize] {
-        [
-            u8_get_xid_status(val, 0),
-            u8_get_xid_status(val, 1),
-            u8_get_xid_status(val, 2),
-            u8_get_xid_status(val, 3),
-        ]
-    }
-
-    #[cfg(test)]
-    pub fn data(&self) -> &Vec<u8> {
-        &self.0
     }
 }
 
@@ -136,12 +127,25 @@ pub fn init(gucstate: &GucState) -> GlobalStateExt {
 
 #[derive(Copy, Clone)]
 pub struct WorkerStateExt {
-    d: &'static slru::Slru,
+    g: &'static GlobalStateExt,
 }
 
 impl WorkerStateExt {
-    pub fn new(d: &'static GlobalStateExt) -> WorkerStateExt {
-        WorkerStateExt { d: &d.d }
+    pub fn new(g: &'static GlobalStateExt) -> WorkerStateExt {
+        WorkerStateExt { g }
+    }
+
+    pub fn set_xid_status(&self, xid: Xid, status: XidStatus) -> anyhow::Result<()> {
+        let xid = xid.get();
+        let byteno = xid_to_byte(xid);
+        let bidx = xid_to_bidx(xid);
+        let bshift = bidx * BITS_PER_XACT;
+        let andbits = !(((1 << BITS_PER_XACT) - 1) << bshift);
+        let orbits = (status as u8) << bshift;
+        // Add group commit like TransactionGroupUpdateXidStatus
+        self.g.d.writable_load(xid_to_pageno(xid), |buff| {
+            buff[byteno] = (buff[byteno] & andbits) | orbits;
+        })
     }
 }
 
@@ -172,6 +176,13 @@ pub trait WorkerExt {
         idx: &[usize],
         ret: &mut VecXidStatus,
     ) -> anyhow::Result<()>;
+    fn xid_status(&self, xid: Xid) -> anyhow::Result<XidStatus> {
+        let xids = [xid];
+        let idx = [0 as usize];
+        let mut ret = VecXidStatus::new(1);
+        self.get_xid_status(&xids, &idx, &mut ret)?;
+        return Ok(ret.get_xid_status(0));
+    }
 }
 
 const BITS_PER_XACT: u64 = 2;
@@ -209,17 +220,7 @@ fn insert_pageno_idx(xidmap: &mut PagenoIdxMap, pageno: slru::Pageno, idx: usize
 
 impl WorkerExt for Worker {
     fn set_xid_status(&self, xid: Xid, status: XidStatus) -> anyhow::Result<()> {
-        let slru = self.state.clog.d;
-        let xid = xid.get();
-        let byteno = xid_to_byte(xid);
-        let bidx = xid_to_bidx(xid);
-        let bshift = bidx * BITS_PER_XACT;
-        let andbits = !(((1 << BITS_PER_XACT) - 1) << bshift);
-        let orbits = (status as u8) << bshift;
-        // Add group commit like TransactionGroupUpdateXidStatus
-        slru.writable_load(xid_to_pageno(xid), |buff| {
-            buff[byteno] = (buff[byteno] & andbits) | orbits;
-        })
+        return self.state.clog.set_xid_status(xid, status);
     }
 
     fn get_xid_status(
@@ -252,7 +253,7 @@ impl WorkerExt for Worker {
         for (&pageno, idxes) in xidmap.iter() {
             let mut cachekey_set =
                 HashSet::<u64>::with_capacity(idxes.len() / PACKED_XIDS as usize);
-            self.state.clog.d.try_readonly_load(pageno, |buff| {
+            self.state.clog.g.d.try_readonly_load(pageno, |buff| {
                 for (&xid, idx) in SelectedSliceIter::new(xids, idxes.iter().map(|v| *v)) {
                     let byteno = xid_to_byte(xid.get());
                     let xidstatus = get_xid_status(buff, byteno, xid_to_bidx(xid.get()));

@@ -10,20 +10,23 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-use self::err::ErrCtx;
-use crate::access::{clog, xact};
+use crate::access::{clog, wal, xact};
 use crate::catalog::namespace::SessionStateExt as NameSpaceSessionStateExt;
 use crate::Oid;
 use crate::{guc, protocol, GlobalState};
 use anyhow::anyhow;
+use chrono::offset::Local;
+use chrono::DateTime;
 use std::cell::RefCell;
 use std::debug_assert;
+use std::fmt::Write as fmt_writer;
 use std::fs::File;
 use std::io::Write;
 use std::net::TcpStream;
 use std::num::NonZeroU16;
 use std::path::Path;
 use std::sync::{atomic::AtomicBool, Arc};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::NamedTempFile;
 use thread_local::ThreadLocal;
 
@@ -80,15 +83,6 @@ impl WorkerState {
     }
 }
 
-fn format_err(err: &anyhow::Error) -> (String, Option<&ErrCtx>) {
-    if let Some(errctx) = err.downcast_ref::<ErrCtx>() {
-        let errmsg = format!("{} rootcause={}", errctx, err.root_cause());
-        return (errmsg, Some(errctx));
-    } else {
-        return (format!("{}", err), None);
-    }
-}
-
 pub struct SessionState {
     pub worker_cache: &'static ThreadLocal<RefCell<WorkerCache>>,
     pub clog: clog::WorkerStateExt,
@@ -99,8 +93,9 @@ pub struct SessionState {
     pub termreq: Arc<AtomicBool>,
     pub gucstate: Arc<guc::GucState>,
     pub metaconn: sqlite::Connection,
-    pub xact: Option<&'static xact::GlobalStateExt>,
-
+    pub xact: xact::SessionStateExt,
+    pub wal: Option<&'static wal::GlobalStateExt>,
+    pub stmt_startts: SystemTime,
     pub dead: bool,
     pub nsstate: NameSpaceSessionStateExt,
 }
@@ -114,6 +109,7 @@ impl SessionState {
         metaconn: sqlite::Connection,
         gstate: GlobalState,
     ) -> Self {
+        let now = SystemTime::now();
         Self {
             sessid,
             reqdb,
@@ -125,24 +121,29 @@ impl SessionState {
             dead: false,
             nsstate: NameSpaceSessionStateExt::default(),
             clog: clog::WorkerStateExt::new(gstate.clog),
-            xact: gstate.xact,
+            stmt_startts: now,
+            xact: xact::SessionStateExt::new(gstate.xact, now),
+            wal: gstate.wal,
             worker_cache: gstate.worker_cache,
         }
     }
 
-    pub fn error(code: &str, msg: &str, stream: &mut TcpStream) {
+    pub fn error(&self, code: &str, msg: &str, stream: &mut TcpStream) {
         log::error!("{}", msg);
-        protocol::write_message(stream, &protocol::ErrorResponse::new("ERROR", code, msg))
+        let loglvl = if self.dead { "FATAL" } else { "ERROR" };
+        protocol::write_message(stream, &protocol::ErrorResponse::new(loglvl, code, msg))
     }
 
-    pub fn on_error(err: &anyhow::Error, stream: &mut TcpStream) {
-        let (errmsg, errctx) = format_err(err);
-        let errcode = if let Some(errctx) = errctx {
-            errctx.code
-        } else {
-            protocol::ERRCODE_INTERNAL_ERROR
-        };
-        SessionState::error(errcode, &format!("session error. err={}", errmsg), stream);
+    pub fn on_error(&self, err: &anyhow::Error, stream: &mut TcpStream) {
+        let errcode = err::errcode(err);
+        self.error(errcode, &format!("{:#}", err), stream);
+    }
+
+    pub fn update_stmt_startts(&mut self) {
+        self.stmt_startts = SystemTime::now();
+    }
+    pub fn new_worker(&self) -> Worker {
+        Worker::new(WorkerState::new(self))
     }
 }
 
@@ -206,6 +207,14 @@ impl std::convert::From<TypMod> for i32 {
 pub type AttrNumber = NonZeroU16;
 pub type Xid = std::num::NonZeroU64;
 
+pub fn inc_xid(v: Xid) -> Xid {
+    Xid::new(v.get() + 1).unwrap()
+}
+
+pub fn dec_xid(v: Xid) -> Xid {
+    Xid::new(v.get() - 1).unwrap()
+}
+
 pub fn sync_dir<P: AsRef<Path>>(path: P) -> std::io::Result<()> {
     File::open(path)?.sync_all()
 }
@@ -225,4 +234,23 @@ pub fn persist<P: AsRef<Path>>(file: P, d: &[u8]) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow!("persist: invalid filepath. file={:?}", path))?;
     sync_dir(dir)?;
     Ok(())
+}
+
+pub fn t2u64(t: SystemTime) -> u64 {
+    t.duration_since(UNIX_EPOCH).unwrap().as_secs()
+}
+
+pub fn u642t(v: u64) -> SystemTime {
+    UNIX_EPOCH.checked_add(Duration::new(v, 0)).unwrap()
+}
+
+pub fn write_ts(str: &mut String, t: SystemTime) {
+    let t: DateTime<Local> = t.into();
+    write!(str, "{:?}", t).unwrap();
+}
+
+pub fn t2s(t: SystemTime) -> String {
+    let mut s = String::new();
+    write_ts(&mut s, t);
+    return s;
 }

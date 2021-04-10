@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, Ordering::Re
 use std::sync::{Arc, Condvar, Mutex};
 use stderrlog::{ColorChoice, Timestamp};
 use thread_local::ThreadLocal;
-use utils::{AttrNumber, SessionState, TypLen, TypMod, WorkerCache};
+use utils::{err::errcode, AttrNumber, SessionState, TypLen, TypMod, WorkerCache};
 
 pub mod access;
 pub mod catalog;
@@ -254,13 +254,17 @@ fn do_session_fatal(stream: &mut TcpStream, code: &str, msg: &str) {
 }
 
 macro_rules! session_fatal {
+    ($stream: expr, $code: ident, $fmt: expr, $($arg:tt)*) => {
+        let ___session_fatal_errmsg = format!($fmt, $($arg)*);
+        do_session_fatal($stream, $crate::protocol::$code, &___session_fatal_errmsg);
+    };
     ($stream: expr, $code: expr, $fmt: expr, $($arg:tt)*) => {
         let ___session_fatal_errmsg = format!($fmt, $($arg)*);
         do_session_fatal($stream, $code, &___session_fatal_errmsg);
     };
-    ($stream: expr, $code: expr, $fmt: expr) => {
+    ($stream: expr, $code: ident, $fmt: expr) => {
         let ___session_fatal_errmsg = format!($fmt);
-        do_session_fatal($stream, $code, &___session_fatal_errmsg);
+        do_session_fatal($stream, $crate::protocol::$code, &___session_fatal_errmsg);
     };
 }
 
@@ -315,7 +319,7 @@ pub fn postgres_main(global_state: GlobalState, mut streamv: TcpStream, sessid: 
                         Err(err) => {
                             session_fatal!(
                                 stream,
-                                protocol::ERRCODE_PROTOCOL_VIOLATION,
+                                ERRCODE_PROTOCOL_VIOLATION,
                                 "unexpected startup msg. err={:?}",
                                 err
                             );
@@ -334,44 +338,26 @@ pub fn postgres_main(global_state: GlobalState, mut streamv: TcpStream, sessid: 
     if !startup_msg.check_client_encoding(expected_client_encoding) {
         session_fatal!(
             stream,
-            protocol::ERRCODE_PROTOCOL_VIOLATION,
+            ERRCODE_PROTOCOL_VIOLATION,
             "Unsupported client encoding. expected={}",
             expected_client_encoding
         );
         return;
     }
-    let (reqdb, dbname) = match catalog::get_database(&startup_msg.database()) {
-        Err(err) => {
-            session_fatal!(
-                stream,
-                protocol::ERRCODE_UNDEFINED_DATABASE,
-                "database \"{}\" does not exist. err={}",
-                &startup_msg.database(),
-                err
-            );
-            return;
-        }
-        Ok(db) => (db.oid, db.datname),
-    };
-    log::info!("connect database. dboid={}", reqdb);
-    let metaconn = match sqlite::open(format!("base/{}/meta.db", reqdb)) {
-        Err(err) => {
-            session_fatal!(
-                stream,
-                protocol::ERRCODE_INTERNAL_ERROR,
-                "connt open metaconn. err={}",
-                err
-            );
-            return;
-        }
-        Ok(conn) => conn,
-    };
 
     // post-validate
     let sesskey = rand::random();
     let termreq = insert_cancel_map(&global_state.cancelmap, sessid, sesskey);
     let _droper = SessionDroper::new(&global_state.cancelmap, sessid);
-    let mut state = SessionState::new(sessid, reqdb, dbname, termreq, metaconn, global_state);
+    let mut state = match global_state.new_session(&startup_msg.database(), sessid, termreq) {
+        Err(err) => {
+            session_fatal!(stream, errcode(&err), "{:#}", err);
+            return;
+        }
+        Ok(state) => state,
+    };
+    log::info!("connect database. dboid={}", state.reqdb);
+
     // post-validate for client-side
     protocol::write_message(stream, &protocol::AuthenticationOk {});
     protocol::report_all_gucs(&state.gucstate, stream);
@@ -381,7 +367,7 @@ pub fn postgres_main(global_state: GlobalState, mut streamv: TcpStream, sessid: 
             if state.termreq.load(Ordering::Relaxed) {
                 session_fatal!(
                     stream,
-                    protocol::ERRCODE_ADMIN_SHUTDOWN,
+                    ERRCODE_ADMIN_SHUTDOWN,
                     "terminating connection due to administrator command"
                 );
                 return;
@@ -399,7 +385,7 @@ pub fn postgres_main(global_state: GlobalState, mut streamv: TcpStream, sessid: 
             Err(err) => {
                 session_fatal!(
                     stream,
-                    protocol::ERRCODE_CONNECTION_FAILURE,
+                    ERRCODE_CONNECTION_FAILURE,
                     "read_message failed. err={}",
                     err
                 );
@@ -416,17 +402,18 @@ pub fn postgres_main(global_state: GlobalState, mut streamv: TcpStream, sessid: 
         if msgtype != protocol::MsgType::Query as i8 {
             session_fatal!(
                 stream,
-                protocol::ERRCODE_PROTOCOL_VIOLATION,
+                ERRCODE_PROTOCOL_VIOLATION,
                 "unexpected msg. expected=Q actual={}",
                 msgtype
             );
             return;
         }
+        state.update_stmt_startts();
         let query = match protocol::Query::deserialize(&msgdata) {
             Err(err) => {
                 session_fatal!(
                     stream,
-                    protocol::ERRCODE_PROTOCOL_VIOLATION,
+                    ERRCODE_PROTOCOL_VIOLATION,
                     "unexpected query msg. err={:?}",
                     err
                 );
@@ -497,23 +484,32 @@ fn do_exec_simple_query(
 ) -> anyhow::Result<()> {
     // We dont want a multi-line log.
     log::info!("receive query. {}", query /* .replace("\n", " ") */);
+    session.start_tran_cmd()?;
     let ast = parser::parse(query)
         .with_context(|| errctx!(ERRCODE_SYNTAX_ERROR, "parse query failed"))?;
-    log::trace!("parse query. ast={:?}", ast);
+    if session.is_aborted() && !ast.is_tran_exit() {
+        kbbail!(
+            ERRCODE_IN_FAILED_SQL_TRANSACTION,
+            "current transaction is aborted, commands ignored until end of transaction block"
+        );
+    }
     if let parser::syn::Stmt::Empty = ast {
         protocol::write_message(stream, &protocol::EmptyQueryResponse {});
-        return Ok(());
+    } else {
+        let query = parser::sem::kb_analyze(session, &ast)?;
+        match query {
+            parser::sem::Stmt::Utility(ref stmt) => exec_utility(stmt, session, stream),
+            parser::sem::Stmt::Optimizable(ref stmt) => exec_optimizable(stmt, session, stream),
+        }?;
     }
-    let query = parser::sem::kb_analyze(session, &ast)?;
-    match query {
-        parser::sem::Stmt::Utility(ref stmt) => exec_utility(stmt, session, stream),
-        parser::sem::Stmt::Optimizable(ref stmt) => exec_optimizable(stmt, session, stream),
-    }
+    session.commit_tran_cmd()?;
+    return Ok(());
 }
 
 fn exec_simple_query(query: &str, session: &mut SessionState, stream: &mut TcpStream) {
     if let Err(ref err) = do_exec_simple_query(query, session, stream) {
-        SessionState::on_error(err, stream);
+        session.on_error(err, stream);
+        session.abort_cur_tran().unwrap();
     }
 }
 
@@ -533,6 +529,11 @@ pub struct GlobalState {
     pub oid_creator: Option<&'static AtomicU32>, // nextoid
     pub xid_creator: Option<&'static AtomicU64>, // nextxid
 }
+
+#[cfg(test)]
+const TEST_SESSID: u32 = 0;
+const REDO_SESSID: u32 = 1;
+pub const LAST_INTERNAL_SESSID: u32 = 20181218;
 
 impl GlobalState {
     fn new(gucstate: Arc<guc::GucState>) -> GlobalState {
@@ -554,6 +555,36 @@ impl GlobalState {
         std::env::set_current_dir(datadir).unwrap();
         guc::load_apply_gucs("kuiba.conf", Arc::make_mut(&mut gucstate)).unwrap();
         GlobalState::new(gucstate)
+    }
+
+    fn new_session(
+        self,
+        dbname: &str,
+        sessid: u32,
+        termreq: Arc<AtomicBool>,
+    ) -> anyhow::Result<SessionState> {
+        let reqdb = catalog::get_database(dbname).with_context(|| {
+            errctx!(
+                ERRCODE_UNDEFINED_DATABASE,
+                "database \"{}\" does not exist.",
+                dbname
+            )
+        })?;
+        let metaconn = sqlite::open(format!("base/{}/meta.db", reqdb.oid))
+            .with_context(|| errctx!(ERRCODE_INTERNAL_ERROR, "connt open metaconn."))?;
+        Ok(SessionState::new(
+            sessid,
+            reqdb.oid,
+            reqdb.datname,
+            termreq,
+            metaconn,
+            self,
+        ))
+    }
+
+    fn internal_session(self, sessid: u32) -> anyhow::Result<SessionState> {
+        debug_assert!(sessid <= 20181218);
+        self.new_session("kuiba", sessid, Arc::<AtomicBool>::default())
     }
 }
 

@@ -29,8 +29,15 @@ stmt: syn::Stmt<'input> = {
     <s:VariableShowStmt> => syn::Stmt::VariableShow(s),
     <s:DefineTypeStmt> => syn::Stmt::DefineType(s),
     <s:SelectStmt> => syn::Stmt::Select(s),
+    <s:TranStmt> => syn::Stmt::Tran(s),
     // EMPTY
     => syn::Stmt::Empty,
+}
+
+TranStmt: syn::TranStmt = {
+    BEGIN_P => syn::TranStmt::Begin,
+    ABORT_P => syn::TranStmt::Abort,
+    COMMIT => syn::TranStmt::Commit,
 }
 
 VariableShowStmt: syn::VariableShowStmt<'input> = {
@@ -125,6 +132,9 @@ match {
     r"[sS][eE][tT]" => SET,
     r"[sS][hH][oO][wW]" => SHOW,
     r"[tT][rR][uU][eE]" => TRUE_P,
+    r"[bB][eE][gG][iI][nN]" => BEGIN_P,
+    r"[aA][bB][oO][rR][tT]" => ABORT_P,
+    r"[cC][oO][mM][mM][iI][tT]" => COMMIT,
     r"[fF][aA][lL][sS][eE]" => FALSE_P,
 } else {
     r"[a-z_][a-z0-9_]*" => LOWERCASE_ID,

@@ -79,12 +79,44 @@ pub struct VariableShowStmt<'input> {
 }
 
 #[derive(Debug)]
+pub enum TranStmt {
+    Begin,
+    Abort,
+    Commit,
+}
+
+#[derive(Debug)]
 pub enum Stmt<'input> {
     VariableSet(VariableSetStmt<'input>),
     VariableShow(VariableShowStmt<'input>),
     DefineType(DefineTypeStmt<'input>),
     Select(SelectStmt<'input>),
+    Tran(TranStmt),
     Empty,
+}
+
+impl Stmt<'_> {
+    pub fn is_tran_exit(&self) -> bool {
+        match self {
+            Stmt::Tran(TranStmt::Commit) | Stmt::Tran(TranStmt::Abort) => true,
+            _ => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod syn_test {
+    use super::{Stmt, TranStmt};
+
+    #[test]
+    fn f() {
+        let s = Stmt::Tran(TranStmt::Commit);
+        assert!(s.is_tran_exit());
+        let s = Stmt::Tran(TranStmt::Abort);
+        assert!(s.is_tran_exit());
+        let s = Stmt::Tran(TranStmt::Begin);
+        assert!(!s.is_tran_exit());
+    }
 }
 
 #[derive(Debug)]

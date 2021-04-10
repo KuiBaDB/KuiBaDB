@@ -21,12 +21,8 @@ fn get_xid_status(w: &Worker, xids: &[Xid]) -> Vec<XidStatus> {
     let mut ret = VecXidStatus::new(xids.len());
     w.get_xid_status(xids, &idxes, &mut ret).unwrap();
     let mut v = Vec::<XidStatus>::with_capacity(xids.len());
-    for &byteval in ret.data() {
-        let xid_status = VecXidStatus::split(byteval);
-        v.push(xid_status[0]);
-        v.push(xid_status[1]);
-        v.push(xid_status[2]);
-        v.push(xid_status[3]);
+    for idx in 0..xids.len() {
+        v.push(ret.get_xid_status(idx));
     }
     v
 }
