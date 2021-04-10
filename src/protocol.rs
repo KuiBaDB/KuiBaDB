@@ -312,7 +312,9 @@ impl Message for BackendKeyData {
 #[repr(u8)]
 #[derive(Copy, Clone)]
 pub enum XactStatus {
-    IDLE = 'I' as u8,
+    NotInBlock = 'I' as u8,
+    InBlock = 'T' as u8,
+    Failed = 'E' as u8,
 }
 
 pub struct ReadyForQuery {

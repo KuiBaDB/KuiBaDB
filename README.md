@@ -38,19 +38,19 @@
 
     kuiba=# begin;
     BEGIN
-    kuiba=# select 1;
+    kuiba=*# select 1;
     1
-    kuiba=# commit;
+    kuiba=*# commit;
     COMMIT
     kuiba=# begin;
     BEGIN
-    kuiba=# select 1;
+    kuiba=*# select 1;
     1
-    kuiba=# select x;
+    kuiba=*# select x;
     ERROR:  parse query failed: Parse Error. UnrecognizedToken { token: (7, Token(16, "x"), 8), expected: ["\"(\"", "\"+\"", "\"-\"", "\";\"", "DECIMAL", "INTEGER", "XB"] }
-    kuiba=# select 1;
+    kuiba=!# select 1;
     ERROR:  current transaction is aborted, commands ignored until end of transaction block:
-    kuiba=# commit;
+    kuiba=!# commit;
     ROLLBACK
     ```
 

@@ -377,10 +377,7 @@ pub fn postgres_main(global_state: GlobalState, mut streamv: TcpStream, sessid: 
 
     loop {
         check_termreq!();
-        protocol::write_message(
-            stream,
-            &protocol::ReadyForQuery::new(protocol::XactStatus::IDLE),
-        );
+        protocol::write_message(stream, &protocol::ReadyForQuery::new(state.xact_status()));
         let (msgtype, msgdata) = match protocol::read_message(stream) {
             Err(err) => {
                 session_fatal!(

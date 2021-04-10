@@ -11,6 +11,7 @@
 use super::clog::{WorkerExt as clog_worker_ext, XidStatus};
 use super::redo::RedoState;
 use super::wal::{self, Lsn, RecordHdr, Rmgr, RmgrId};
+use crate::protocol::XactStatus;
 use crate::utils::{dec_xid, inc_xid, KBSystemTime, SessionState, Xid};
 use anyhow::{anyhow, bail};
 use log;
@@ -322,6 +323,11 @@ fn tctx(sess: &mut SessionState) -> &mut TranCtx {
     &mut sctx(sess).tranctx
 }
 
+// immutable tctx
+fn itctx(sess: &SessionState) -> &TranCtx {
+    &sess.xact.tranctx
+}
+
 fn log_xact_rec(sess: &mut SessionState, xact_endts: KBSystemTime, info: XactInfo) {
     let commit_rec = XactRec { xact_endts };
     let commit_rec_ser: XactRecSer = (&commit_rec).into();
@@ -383,11 +389,19 @@ fn start_tran(sess: &mut SessionState) -> anyhow::Result<()> {
     debug_assert!(sctx(sess).last_rec_end.is_none());
     debug_assert_eq!(tctx(sess).state, TranState::Default);
     tctx(sess).state = TranState::Start;
-    tctx(sess).xid = Some(gctx(sess).start_xid()?);
+    // tctx(sess).xid = Some(gctx(sess).start_xid()?);
     tctx(sess).startts = sess.stmt_startts;
     tctx(sess).state = TranState::Inprogress;
     sctx(sess).snap = Some(gctx(sess).get_snap());
     return Ok(());
+}
+// AssignTransactionId
+fn assign_xid(sess: &mut SessionState) -> anyhow::Result<Xid> {
+    debug_assert_eq!(tctx(sess).state, TranState::Inprogress);
+    debug_assert!(tctx(sess).xid.is_none());
+    let xid = gctx(sess).start_xid()?;
+    tctx(sess).xid = Some(xid);
+    return Ok(xid);
 }
 
 // CommitTransaction
@@ -439,6 +453,7 @@ pub trait SessionExt {
     fn end_tran_block(&mut self) -> anyhow::Result<bool>;
     // UserAbortTransactionBlock
     fn user_abort_tran_block(&mut self) -> anyhow::Result<()>;
+    fn get_xid(&mut self) -> anyhow::Result<Xid>;
     fn is_aborted(&self) -> bool;
     fn insert_record(&mut self, id: RmgrId, info: u8, rec: Vec<u8>) -> Lsn;
     fn try_insert_record(
@@ -448,6 +463,7 @@ pub trait SessionExt {
         rec: Vec<u8>,
         page_lsn: Lsn,
     ) -> Option<Lsn>;
+    fn xact_status(&self) -> XactStatus;
 }
 
 impl SessionExt for SessionState {
@@ -626,6 +642,22 @@ impl SessionExt for SessionState {
         }
         self.xact.last_rec_end = ret;
         return ret;
+    }
+    fn get_xid(&mut self) -> anyhow::Result<Xid> {
+        if let Some(xid) = tctx(self).xid {
+            return Ok(xid);
+        }
+        return assign_xid(self);
+    }
+    // TransactionBlockStatusCode
+    fn xact_status(&self) -> XactStatus {
+        match itctx(self).block_state {
+            TBlockState::Default | TBlockState::Started => XactStatus::NotInBlock,
+            TBlockState::Begin | TBlockState::Inprogress | TBlockState::End => XactStatus::InBlock,
+            TBlockState::Abort | TBlockState::AbortEnd | TBlockState::AbortPending => {
+                XactStatus::Failed
+            }
+        }
     }
 }
 
