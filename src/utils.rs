@@ -31,6 +31,10 @@ use thread_local::ThreadLocal;
 
 pub mod err;
 pub mod fmgr;
+mod sb;
+
+pub use sb::new_fifo_sb;
+pub use sb::SharedBuffer;
 
 pub struct Worker {
     pub cache: &'static RefCell<WorkerCache>, // thread local

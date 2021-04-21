@@ -53,11 +53,11 @@
     kuiba=!# commit;
     ROLLBACK
     ```
--   [ ] Implement PG-style shared buffer: `SharedBuf<K: Copy, V, E: EvictPolicy>`.
+-   [x] Implement PG-style shared buffer: `SharedBuf<K: Copy, V, E: EvictPolicy>`.
 
     `SharedBuf<TableId, SuperVersion, LRUPolicy>` will be used to save the mapping between the table and its SuperVersion. In RocksDB, SuperVersion of ColumnFamily is memory resident. but OLAP system may have many tables, we should support swapping the SuperVersion of some infrequently used tables out to disk.
 
-    `SharedBuf<PageId, Page, FIFOPolicy>` will be used to save the xmin/xmax/hints page for table file.
+    `SharedBuf<TableId, SharedBuf<PageId, Page, FIFOPolicy>, LRUPolicy>` will be used to save the xmin/xmax/hints page for table file.
 
 -   [ ] Add columnar storage
 

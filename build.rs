@@ -75,7 +75,7 @@ fn load_gucs() -> Gucs {
             "BOOL" => gucs.bool_gucs.push(guc),
             "STR" => gucs.str_gucs.push(guc),
             "REAL" => gucs.real_gucs.push(guc),
-            _ => panic!(format!("Unknown vartype. vartype={}", vartype)),
+            _ => panic!("Unknown vartype. vartype={}", vartype),
         }
     }
     gucs
