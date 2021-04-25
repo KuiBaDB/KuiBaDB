@@ -59,7 +59,7 @@
 
     `SharedBuf<TableId, SharedBuf<PageId, Page, FIFOPolicy>, LRUPolicy>` will be used to save the xmin/xmax/hints page for table file.
 
--   [ ] Add columnar storage
+-   [ ] Add [columnar storage](https://blog.hidva.com/2021/04/25/kuiba-column-storage/).
 
 -   [ ] Add Copy
 
