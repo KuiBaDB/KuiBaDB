@@ -21,11 +21,12 @@ impl<K: Eq + Hash + Copy + std::fmt::Debug> SBK for K {}
 
 pub trait Value: std::marker::Sized {
     type Data;
-    fn load<K: SBK>(k: &K, ctx: &Self::Data) -> anyhow::Result<Self>;
-    fn store<K: SBK>(&self, k: &K, ctx: &Self::Data) -> anyhow::Result<()>;
+    type K: SBK;
+    fn load(k: &Self::K, ctx: &Self::Data) -> anyhow::Result<Self>;
+    fn store(&self, k: &Self::K, ctx: &Self::Data, force: bool) -> anyhow::Result<()>;
 }
 
-type Map<K, V, E> = HashMap<K, Box<Slot<K, V, E>>>;
+type Map<V, E> = HashMap<<V as Value>::K, Box<Slot<V, E>>>;
 
 pub trait EvictPolicy: std::marker::Sized {
     type Data; // slot data
@@ -35,42 +36,51 @@ pub trait EvictPolicy: std::marker::Sized {
     fn on_use_slot<K: SBK>(&self, k: &K, s: &Self::Data);
     fn on_drop_slot<K: SBK>(&mut self, k: &K, s: &Self::Data);
     // StrategyGetBuffer
-    fn evict_cand<'a, K: SBK, V: Value>(
+    fn evict_cand<'a, V: Value>(
         &self,
-        part: &'a Map<K, V, Self>,
-        newk: &K,
-    ) -> (Option<&'a Slot<K, V, Self>>, u32);
+        part: &'a Map<V, Self>,
+        newk: &V::K,
+    ) -> (Option<&'a Slot<V, Self>>, u32);
 }
 
-pub struct SharedBuffer<K: SBK, V: Value, E: EvictPolicy> {
-    dat: RwLock<(Map<K, V, E>, E)>,
+pub struct SharedBuffer<V: Value, E: EvictPolicy> {
+    dat: RwLock<(Map<V, E>, E)>,
     valctx: V::Data,
     cap: usize,
 }
 
-enum TryGetRet<'a, K: SBK, V: Value, E: EvictPolicy> {
-    Found((&'a Slot<K, V, E>, bool)),
+enum TryGetRet<'a, V: Value, E: EvictPolicy> {
+    Found((&'a Slot<V, E>, bool)),
     HasIdleSlot,
-    Evict(Option<&'a Slot<K, V, E>>, u32),
+    Evict(Option<&'a Slot<V, E>>, u32),
 }
 
-pub struct SlotPinGuard<'a, K: SBK, V: Value, E: EvictPolicy>(&'a Slot<K, V, E>);
+pub struct SlotPinGuard<'a, V: Value, E: EvictPolicy>(&'a Slot<V, E>);
 
-impl<'a, K: SBK, V: Value, E: EvictPolicy> Drop for SlotPinGuard<'a, K, V, E> {
+impl<'a, V: Value, E: EvictPolicy> Drop for SlotPinGuard<'a, V, E> {
     fn drop(&mut self) {
         self.0.unpin()
     }
 }
 
-impl<'a, K: SBK, V: Value, E: EvictPolicy> std::ops::Deref for SlotPinGuard<'a, K, V, E> {
-    type Target = Slot<K, V, E>;
+impl<'a, V: Value, E: EvictPolicy> std::ops::Deref for SlotPinGuard<'a, V, E> {
+    type Target = Slot<V, E>;
     fn deref(&self) -> &'a Self::Target {
         self.0
     }
 }
 
+impl<V: Value, E: EvictPolicy> Drop for SharedBuffer<V, E> {
+    fn drop(&mut self) {
+        let dirty_keys = self.get_dirty_keys();
+        if !dirty_keys.is_empty() {
+            panic!("SharedBuffer::drop(): dirty keys: {:?}", dirty_keys);
+        }
+    }
+}
+
 // TODO: Add prometheus metric and bgwriter thread. bgwriter thread will periodly flush dirty slot.
-impl<K: SBK, V: Value, E: EvictPolicy> SharedBuffer<K, V, E> {
+impl<V: Value, E: EvictPolicy> SharedBuffer<V, E> {
     pub fn new(cap: usize, evict: E, valctx: V::Data) -> Self {
         Self {
             dat: RwLock::new((Map::with_capacity(cap), evict)),
@@ -79,17 +89,42 @@ impl<K: SBK, V: Value, E: EvictPolicy> SharedBuffer<K, V, E> {
         }
     }
 
-    fn pin_slot(&self, v: &Slot<K, V, E>) -> (&Slot<K, V, E>, bool) {
+    fn pin_slot(&self, v: &Slot<V, E>) -> (&Slot<V, E>, bool) {
         let valid = v.pin();
         return (self.p2r(v as *const _), valid);
     }
 
-    fn use_slot(&self, evict: &E, v: &Slot<K, V, E>) -> (&Slot<K, V, E>, bool) {
+    fn use_slot(&self, evict: &E, v: &Slot<V, E>) -> (&Slot<V, E>, bool) {
         evict.on_use_slot(&v.k, &v.evict);
         self.pin_slot(v)
     }
 
-    fn try_get(&self, k: &K) -> TryGetRet<K, V, E> {
+    // Without invoking on_use_slot().
+    fn find(&self, k: &V::K) -> Option<SlotPinGuard<V, E>> {
+        let dat = self.dat.read().unwrap();
+        let map = &dat.0;
+        map.get(k).map(|v| {
+            let (pinned_v, valid) = self.pin_slot(v);
+            debug_assert!(valid);
+            SlotPinGuard(pinned_v)
+        })
+    }
+
+    fn get_dirty_keys(&self) -> Vec<V::K> {
+        let mut v = Vec::new();
+
+        let dat = self.dat.read().unwrap();
+        let map = &dat.0;
+        for (key, slot) in map {
+            if dirty(slot.locked_state()) {
+                v.push(*key);
+            }
+        }
+
+        return v;
+    }
+
+    fn try_get(&self, k: &V::K) -> TryGetRet<V, E> {
         let dat = self.dat.read().unwrap();
         let partmap = &dat.0;
         let evict = &dat.1;
@@ -103,7 +138,7 @@ impl<K: SBK, V: Value, E: EvictPolicy> SharedBuffer<K, V, E> {
         return TryGetRet::Evict(slot.map(|v| self.p2r(v as *const _)), state);
     }
 
-    fn create_slot(&self, dat: &mut (Map<K, V, E>, E), k: &K) -> &Slot<K, V, E> {
+    fn create_slot(&self, dat: &mut (Map<V, E>, E), k: &V::K) -> &Slot<V, E> {
         let evict = dat.1.on_create_slot(k);
         let slot = Box::new(Slot::new(k, evict));
         let slotref = self.p2r(slot.as_ref() as *const _);
@@ -111,7 +146,7 @@ impl<K: SBK, V: Value, E: EvictPolicy> SharedBuffer<K, V, E> {
         return slotref;
     }
 
-    fn try_create(&self, k: &K, evict: Option<&Slot<K, V, E>>) -> (Option<&Slot<K, V, E>>, bool) {
+    fn try_create(&self, k: &V::K, evict: Option<&Slot<V, E>>) -> (Option<&Slot<V, E>>, bool) {
         let mut dat = self.dat.write().unwrap();
         if let Some(v) = dat.0.get(k) {
             let ret = self.use_slot(&dat.1, &v);
@@ -133,12 +168,12 @@ impl<K: SBK, V: Value, E: EvictPolicy> SharedBuffer<K, V, E> {
         return (None, false);
     }
 
-    fn p2r(&self, slot: *const Slot<K, V, E>) -> &Slot<K, V, E> {
+    fn p2r(&self, slot: *const Slot<V, E>) -> &Slot<V, E> {
         unsafe { &*slot }
     }
 
     // the slot returned should have be pinned.
-    fn get(&self, k: &K) -> anyhow::Result<(&Slot<K, V, E>, bool)> {
+    fn get(&self, k: &V::K) -> anyhow::Result<(&Slot<V, E>, bool)> {
         loop {
             let evict_slot = match self.try_get(k) {
                 TryGetRet::Found(s) => {
@@ -167,7 +202,7 @@ impl<K: SBK, V: Value, E: EvictPolicy> SharedBuffer<K, V, E> {
         }
     }
 
-    pub fn read(&self, k: &K) -> anyhow::Result<SlotPinGuard<K, V, E>> {
+    pub fn read(&self, k: &V::K) -> anyhow::Result<SlotPinGuard<V, E>> {
         let (slot, valid) = self.get(k)?;
         if valid {
             return Ok(SlotPinGuard(slot));
@@ -187,6 +222,23 @@ impl<K: SBK, V: Value, E: EvictPolicy> SharedBuffer<K, V, E> {
                 return Err(e);
             }
         }
+    }
+
+    pub fn flushall(&self, force: bool) -> anyhow::Result<()> {
+        let dirty_keys = self.get_dirty_keys();
+        for dirty_key in &dirty_keys {
+            if let Some(pinned_slot) = self.find(dirty_key) {
+                if !dirty(pinned_slot.locked_state()) {
+                    continue;
+                }
+                if force {
+                    pinned_slot.flush(&self.valctx)?;
+                } else {
+                    pinned_slot.try_flush(&self.valctx)?;
+                }
+            }
+        }
+        return Ok(());
     }
 }
 
@@ -232,26 +284,26 @@ fn valid(state: u32) -> bool {
     biton(state, SLOT_VALID)
 }
 
-pub struct Slot<K: SBK, V: Value, E: EvictPolicy> {
-    k: K,
+pub struct Slot<V: Value, E: EvictPolicy> {
+    k: V::K,
     v: RwLock<Option<V>>, // Use MaybeUninit when assume_init_ref is stable.
     state: AtomicU32,
     evict: E::Data,
 }
 
-struct SlotLockGuard<'a, K: SBK, V: Value, E: EvictPolicy> {
-    slot: &'a Slot<K, V, E>,
+struct SlotLockGuard<'a, V: Value, E: EvictPolicy> {
+    slot: &'a Slot<V, E>,
     state: u32,
 }
 
-impl<'a, K: SBK, V: Value, E: EvictPolicy> Drop for SlotLockGuard<'a, K, V, E> {
+impl<'a, V: Value, E: EvictPolicy> Drop for SlotLockGuard<'a, V, E> {
     fn drop(&mut self) {
         self.slot.unlock(self.state);
     }
 }
 
-impl<K: SBK, V: Value, E: EvictPolicy> Slot<K, V, E> {
-    fn new(k: &K, evict: E::Data) -> Self {
+impl<V: Value, E: EvictPolicy> Slot<V, E> {
+    fn new(k: &V::K, evict: E::Data) -> Self {
         Self {
             k: *k,
             v: RwLock::new(None),
@@ -274,49 +326,47 @@ impl<K: SBK, V: Value, E: EvictPolicy> Slot<K, V, E> {
             .compare_exchange_weak(oldstate, state, Relaxed, Relaxed)
     }
 
-    // PinBuffer
-    fn pin(&self) -> bool {
+    fn atomic_change(&self, change: impl Fn(u32) -> u32) -> u32 {
         let mut old_state = self.get_state();
         loop {
             if locked(old_state) {
                 old_state = self.wait();
             }
-            let state = old_state + REFCOUNT_ONE;
+            let state = change(old_state);
             match self.set_state(old_state, state) {
-                Ok(_) => {
-                    return valid(state);
+                Ok(s) => {
+                    return s;
                 }
                 Err(s) => {
                     old_state = s;
                 }
             }
         }
+    }
+
+    // PinBuffer
+    fn pin(&self) -> bool {
+        return valid(self.atomic_change(|v| v + REFCOUNT_ONE));
     }
 
     fn unpin(&self) {
-        let mut old_state = self.get_state();
-        loop {
-            if locked(old_state) {
-                old_state = self.wait();
-            }
-            let state = old_state - REFCOUNT_ONE;
-            match self.set_state(old_state, state) {
-                Ok(_) => {
-                    return;
-                }
-                Err(s) => {
-                    old_state = s;
-                }
-            }
-        }
+        self.atomic_change(|v| v - REFCOUNT_ONE);
+        return;
     }
 
-    fn pin_locked(&self, mut g: SlotLockGuard<K, V, E>) -> u32 {
+    // False means the slot already is dirty.
+    pub fn mark_dirty(&self) -> bool {
+        return !dirty(self.atomic_change(|v| v | (SLOT_DIRTY | SLOT_JUST_DIRTIED)));
+    }
+
+    fn pin_locked(&self, mut g: SlotLockGuard<V, E>) -> u32 {
         g.state += REFCOUNT_ONE;
         return g.state;
     }
 
-    fn lock(&self) -> SlotLockGuard<K, V, E> {
+    // lock()/unlock() does not use acquire/release semantics,
+    // so do not use it for synchronization
+    fn lock(&self) -> SlotLockGuard<V, E> {
         loop {
             let state = self.state.fetch_or(SLOT_LOCKED, Relaxed);
             if locked(state) {
@@ -349,13 +399,18 @@ impl<K: SBK, V: Value, E: EvictPolicy> Slot<K, V, E> {
         return;
     }
 
-    // FlushBuffer
-    fn do_flush(&self, v: &V, valctx: &V::Data) -> anyhow::Result<()> {
+    // FlushBuffer, flush current slot, we have the read lock on self.v, and v is always self.v.
+    // If do_flush() returns Err, everything is unchanged except SLOT_IO_ERR is set.
+    // If do_flush() returns Ok, it means that we have successfully flushed current slot,
+    // and the dirty flag should have been cleared.
+    // The slot may be still dirty after do_flush() return, others may modify the slot in parallel
+    // when they have the read lock, just like MarkBufferDirtyHint() in PostgreSQL.
+    fn do_flush(&self, v: &V, valctx: &V::Data, force: bool) -> anyhow::Result<()> {
         if !self.startio(false) {
             return Ok(());
         }
         self.clear_just_dirtied();
-        match v.store(&self.k, valctx) {
+        match v.store(&self.k, valctx, force) {
             Ok(_) => {
                 self.endio(true, 0);
                 return Ok(());
@@ -370,7 +425,7 @@ impl<K: SBK, V: Value, E: EvictPolicy> Slot<K, V, E> {
     fn try_flush(&self, valctx: &V::Data) -> anyhow::Result<bool> {
         match self.v.try_read() {
             Ok(gurad) => {
-                self.do_flush(gurad.as_ref().unwrap(), valctx)?;
+                self.do_flush(gurad.as_ref().unwrap(), valctx, false)?;
                 return Ok(true);
             }
             Err(TryLockError::Poisoned(_)) => {
@@ -380,6 +435,11 @@ impl<K: SBK, V: Value, E: EvictPolicy> Slot<K, V, E> {
                 return Ok(false);
             }
         }
+    }
+
+    fn flush(&self, valctx: &V::Data) -> anyhow::Result<()> {
+        let v = self.v.read().unwrap();
+        self.do_flush(v.as_ref().unwrap(), valctx, true)
     }
 
     fn canremove(&self) -> bool {
@@ -466,12 +526,12 @@ impl EvictPolicy for FIFOPolicy {
     fn on_use_slot<K: SBK>(&self, _k: &K, _s: &Self::Data) {}
     fn on_drop_slot<K: SBK>(&mut self, _k: &K, _s: &Self::Data) {}
     // StrategyGetBuffer
-    fn evict_cand<'a, K: SBK, V: Value>(
+    fn evict_cand<'a, V: Value>(
         &self,
-        part: &'a Map<K, V, Self>,
-        _newk: &K,
-    ) -> (Option<&'a Slot<K, V, Self>>, u32) {
-        let mut minslot: Option<SlotPinGuard<'a, K, V, Self>> = None;
+        part: &'a Map<V, Self>,
+        _newk: &V::K,
+    ) -> (Option<&'a Slot<V, Self>>, u32) {
+        let mut minslot: Option<SlotPinGuard<'a, V, Self>> = None;
         let mut minslotstate = 0;
         for (_, slot) in part {
             if let Some(ref mins) = minslot {
@@ -495,11 +555,12 @@ impl EvictPolicy for FIFOPolicy {
     }
 }
 
-pub fn new_fifo_sb<K: SBK, V: Value>(
-    cap: usize,
-    valctx: V::Data,
-) -> SharedBuffer<K, V, FIFOPolicy> {
+pub fn new_fifo_sb<V: Value>(cap: usize, valctx: V::Data) -> SharedBuffer<V, FIFOPolicy> {
     SharedBuffer::new(cap, FIFOPolicy::new(), valctx)
 }
 
-// TODO: Implement LRUPolicy based on the method in slru.rs.
+// TODO: Implement the real LRUPolicy based on the method in slru.rs.
+pub type LRUPolicy = FIFOPolicy;
+pub fn new_lru_sb<V: Value>(cap: usize, valctx: V::Data) -> SharedBuffer<V, LRUPolicy> {
+    SharedBuffer::new(cap, LRUPolicy::new(), valctx)
+}
