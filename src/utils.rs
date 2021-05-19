@@ -31,7 +31,7 @@ use thread_local::ThreadLocal;
 
 pub mod err;
 pub mod fmgr;
-mod marc;
+pub mod marc;
 pub mod sb;
 
 pub struct Worker {
