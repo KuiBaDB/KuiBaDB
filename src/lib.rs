@@ -66,6 +66,7 @@ mod oids;
 
 pub use oids::OidEnum::*;
 pub use oids::{Oid, OptOid};
+pub type FileId = std::num::NonZeroU32;
 
 pub struct SelectedSliceIter<'a, T, IdxIter> {
     d: &'a [T],

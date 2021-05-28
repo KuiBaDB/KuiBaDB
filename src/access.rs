@@ -20,9 +20,11 @@ use std::debug_assert;
 use std::net::TcpStream;
 use std::rc::Rc;
 
+pub mod ckpt;
 pub mod clog;
 pub mod redo;
 mod slru;
+pub mod sv;
 pub mod wal;
 pub mod xact;
 
