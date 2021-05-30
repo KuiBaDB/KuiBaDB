@@ -217,7 +217,7 @@ pub fn dec_xid(v: Xid) -> Xid {
 }
 
 pub fn sync_dir<P: AsRef<Path>>(path: P) -> std::io::Result<()> {
-    File::open(path)?.sync_all()
+    File::open(path)?.sync_data()
 }
 
 // Path::new(file).parent().unwrap() must not be empty.
@@ -228,7 +228,7 @@ pub fn persist<P: AsRef<Path>>(file: P, d: &[u8]) -> anyhow::Result<()> {
         tempf.write_all(d)?;
         tempf.flush()?;
         let targetfile = tempf.persist(path)?;
-        targetfile.sync_all()?;
+        targetfile.sync_data()?;
     }
     let dir = path
         .parent()

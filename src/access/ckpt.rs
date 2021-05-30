@@ -8,7 +8,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use crate::{FileId, Oid};
 use std::sync::Mutex;
 use std::vec::Vec;
 
@@ -19,9 +18,7 @@ enum FileOp {
 
 struct PendingFileOp {
     op: FileOp,
-    db: Oid,
-    table: Oid,
-    fileid: FileId,
+    path: String,
 }
 
 pub struct PendingFileOps(Mutex<Vec<PendingFileOp>>);
@@ -31,23 +28,19 @@ impl PendingFileOps {
         Self(Mutex::new(Vec::new()))
     }
 
-    pub fn unlink(&self, db: Oid, table: Oid, fileid: FileId) {
+    pub fn unlink(&self, path: String) {
         let mut ops = self.0.lock().unwrap();
         ops.push(PendingFileOp {
             op: FileOp::Unlink,
-            db,
-            table,
-            fileid,
+            path,
         });
     }
 
-    pub fn fsync(&self, db: Oid, table: Oid, fileid: FileId) {
+    pub fn fsync(&self, path: String) {
         let mut ops = self.0.lock().unwrap();
         ops.push(PendingFileOp {
             op: FileOp::Fsync,
-            db,
-            table,
-            fileid,
+            path,
         });
     }
 }

@@ -13,7 +13,6 @@ use crate::guc::{self, GucState};
 use crate::utils::{persist, KBSystemTime, Xid};
 use crate::{make_static, Oid};
 use anyhow::anyhow;
-use crc32c;
 use log;
 use memoffset::offset_of;
 use nix::libc::off_t;
