@@ -21,6 +21,17 @@ use log;
 use sqlite;
 use std::vec::Vec;
 
+#[cfg(target_os = "linux")]
+fn sync() {
+    use nix::unistd::sync as _sync;
+    _sync()
+}
+
+#[cfg(target_os = "macos")]
+fn sync() {
+    println!("sync! sync! sync!")
+}
+
 struct Attr {
     name: &'static str,
     sqlite_type: &'static str,
@@ -138,46 +149,51 @@ const KB_OPERATOR_ATTRS: [Attr; 7] = [
     },
 ];
 
-const KB_ATTRIBUTE_ATTRS: [Attr; 8] = [
+const KB_ATTRIBUTE_ATTRS: [Attr; 9] = [
     Attr {
         name: "attrelid",
         // "oid",
-        sqlite_type: "int",
+        sqlite_type: "int not null",
     },
     Attr {
         name: "attname",
         // "",
-        sqlite_type: "varchar(127)",
+        sqlite_type: "varchar(127) not null",
     },
     Attr {
         name: "atttypid",
         // "oid",
-        sqlite_type: "int",
+        sqlite_type: "int not null",
     },
     Attr {
         name: "attlen",
         // "int2",
-        sqlite_type: "int",
+        sqlite_type: "int not null",
+    },
+    Attr {
+        name: "attalign",
+        // "int1",
+        sqlite_type: "int not null",
     },
     Attr {
         name: "attnum",
         // "int2",
-        sqlite_type: "int",
+        sqlite_type: "int not null",
     },
     Attr {
         name: "atttypmod",
         // "signed int4",
-        sqlite_type: "int",
+        sqlite_type: "int not null",
     },
     Attr {
         name: "attnotnull",
         // "bool",
-        sqlite_type: "int",
+        sqlite_type: "int not null",
     },
     Attr {
         name: "attisdropped",
         // "bool",
-        sqlite_type: "int",
+        sqlite_type: "int not null",
     },
 ];
 
@@ -247,7 +263,7 @@ const KB_PROC_ATTRS: [Attr; 10] = [
     },
 ];
 
-const KB_TYPE_ATTRS: [Attr; 9] = [
+const KB_TYPE_ATTRS: [Attr; 10] = [
     Attr {
         name: "oid",
         // "",
@@ -266,6 +282,11 @@ const KB_TYPE_ATTRS: [Attr; 9] = [
     Attr {
         name: "typlen",
         // "int2",
+        sqlite_type: "int not null",
+    },
+    Attr {
+        name: "typalign",
+        // "int1",
         sqlite_type: "int not null",
     },
     Attr {
@@ -375,14 +396,14 @@ fn create_template0_metadata() {
     conn.execute(format!(
         "
     insert into kb_type values
-    ({}, 'bool', {}, 1, 1, {}, {}, 0, 0),
-    ({}, 'bytea', {}, -1, 1, {}, {}, 0, 0),
-    ({}, 'int8', {}, 8, 1, {}, {}, 0, 0),
-    ({}, 'int2', {}, 2, 1, {}, {}, 0, 0),
-    ({}, 'int4', {}, 4, 1, {}, {}, 0, 0),
-    ({}, 'float4', {}, 4, 1, {}, {}, 0, 0),
-    ({}, 'float8', {}, 8, 1, {}, {}, 0, 0),
-    ({}, 'varchar', {}, -1, 1, {}, {}, 0, 0);
+    ({}, 'bool', {}, 1, 1, 1, {}, {}, 0, 0),
+    ({}, 'bytea', {}, -1, 1, 1, {}, {}, 0, 0),
+    ({}, 'int8', {}, 8, 8, 1, {}, {}, 0, 0),
+    ({}, 'int2', {}, 2, 2, 1, {}, {}, 0, 0),
+    ({}, 'int4', {}, 4, 4, 1, {}, {}, 0, 0),
+    ({}, 'float4', {}, 4, 4, 1, {}, {}, 0, 0),
+    ({}, 'float8', {}, 8, 8, 1, {}, {}, 0, 0),
+    ({}, 'varchar', {}, -1, 1, 1, {}, {}, 0, 0);
     ",
         BOOLOID as u32,
         KBCatalogNamespace as u32,
@@ -930,4 +951,8 @@ fn main() {
     log::info!("create control file");
     create_ctl(&gucstate).unwrap();
     log::info!("initdb success");
+    // Important things are to be repeated for 3 times~
+    sync();
+    sync();
+    sync();
 }

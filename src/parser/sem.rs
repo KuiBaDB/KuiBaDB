@@ -25,6 +25,7 @@ pub enum UtilityStmt<'syn, 'input> {
     VariableSet(&'syn syn::VariableSetStmt<'input>),
     VariableShow(&'syn syn::VariableShowStmt<'input>),
     DefineType(&'syn syn::DefineTypeStmt<'input>),
+    CreateTable(&'syn syn::CreateTableStmt<'input>),
     Tran(&'syn syn::TranStmt),
 }
 
@@ -314,6 +315,7 @@ pub fn kb_analyze<'syn, 'input>(
             };
             transform_select_stmt(&mut pstate, v).map(|v| Stmt::Optimizable(v))
         }
+        syn::Stmt::CreateTable(v) => Ok(Stmt::Utility(UtilityStmt::CreateTable(v))),
         syn::Stmt::Empty => unreachable!(),
     }
 }

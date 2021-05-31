@@ -62,6 +62,7 @@ impl Destory for ImmFile {
     }
 }
 
+// length of l0/l1/l2 may be 0.
 pub struct SupVer {
     l0: Vec<L0File>,
     l1: Vec<Marc<ImmFile>>,

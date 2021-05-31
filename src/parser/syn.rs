@@ -92,6 +92,7 @@ pub enum Stmt<'input> {
     DefineType(DefineTypeStmt<'input>),
     Select(SelectStmt<'input>),
     Tran(TranStmt),
+    CreateTable(CreateTableStmt<'input>),
     Empty,
 }
 
@@ -120,15 +121,32 @@ mod syn_test {
 }
 
 #[derive(Debug)]
-pub struct DefElemAdd<'input> {
-    defnamespace: StrVal<'input>,
-    defname: StrVal<'input>,
+pub struct DefElemVal<'input> {
+    pub defnamespace: Option<StrVal<'input>>,
+    pub defname: StrVal<'input>,
+    pub arg: Value<'input>,
+}
+
+#[derive(Debug)]
+pub enum DefElem<'input> {
+    Unspec(DefElemVal<'input>),
+    Add(DefElemVal<'input>),
+    Set(DefElemVal<'input>),
+    Drop(StrVal<'input>),
+}
+
+pub fn make_def_elem<'input>(defname: StrVal<'input>, arg: Value<'input>) -> DefElem<'input> {
+    DefElem::Unspec(DefElemVal {
+        defnamespace: None,
+        defname,
+        arg,
+    })
 }
 
 #[derive(Debug)]
 pub struct DefineTypeStmt<'input> {
     pub defnames: Vec<StrVal<'input>>,
-    pub definition: Option<Vec<DefElemAdd<'input>>>,
+    pub definition: Vec<DefElem<'input>>,
 }
 
 #[derive(Debug)]
@@ -173,4 +191,45 @@ pub struct ResTarget<'input> {
 pub struct SelectStmt<'input> {
     // tlist may be empty. `select from table` is valid.
     pub tlist: Vec<ResTarget<'input>>,
+}
+
+#[derive(Debug)]
+pub struct Alias<'input> {
+    pub aliasname: StrVal<'input>,
+    pub colnames: Vec<StrVal<'input>>,
+}
+
+#[derive(Debug)]
+pub struct RangeVar<'input> {
+    pub catalogname: Option<StrVal<'input>>,
+    pub schemaname: Option<StrVal<'input>>,
+    pub relname: StrVal<'input>,
+    pub alias: Option<Alias<'input>>,
+}
+
+#[derive(Debug)]
+pub struct TypeName<'input> {
+    pub names: Vec<StrVal<'input>>,
+    pub typmods: Vec<&'input str>,
+}
+
+pub fn system_type_name(name: &str) -> TypeName<'_> {
+    TypeName {
+        typmods: Vec::new(),
+        names: vec![StrVal::InPlace("kb_catalog"), StrVal::InPlace(name)],
+    }
+}
+
+#[derive(Debug)]
+pub struct ColumnDef<'input> {
+    pub colname: StrVal<'input>,
+    pub typename: TypeName<'input>,
+}
+
+// PG CreateStmt
+#[derive(Debug)]
+pub struct CreateTableStmt<'input> {
+    pub relation: RangeVar<'input>,
+    pub table_elts: Vec<ColumnDef<'input>>,
+    pub opts: Vec<DefElem<'input>>,
 }

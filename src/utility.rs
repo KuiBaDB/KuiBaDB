@@ -165,5 +165,12 @@ pub fn process_utility(
         &sem::UtilityStmt::VariableShow(v) => get_guc(v, state),
         &sem::UtilityStmt::DefineType(v) => define_type(v, state),
         &sem::UtilityStmt::Tran(v) => tran(v, state),
+        &sem::UtilityStmt::CreateTable(v) => {
+            println!("{:?}", v);
+            return Ok(Response {
+                resp: None,
+                tag: "CREATE TYPE",
+            });
+        }
     }
 }

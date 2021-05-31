@@ -30,6 +30,7 @@ stmt: syn::Stmt<'input> = {
     <s:DefineTypeStmt> => syn::Stmt::DefineType(s),
     <s:SelectStmt> => syn::Stmt::Select(s),
     <s:TranStmt> => syn::Stmt::Tran(s),
+    <s:CreateTableStmt> => syn::Stmt::CreateTable(s),
     // EMPTY
     => syn::Stmt::Empty,
 }
@@ -43,7 +44,7 @@ TranStmt: syn::TranStmt = {
 VariableShowStmt: syn::VariableShowStmt<'input> = {
     SHOW <n:var_name> => syn::VariableShowStmt {
         name: n,
-    }
+    },
 }
 
 VariableSetStmt: syn::VariableSetStmt<'input> = {
@@ -66,7 +67,7 @@ generic_set: syn::VariableSetStmt<'input> = {
     <n:var_name> "=" <v:var_value> => syn::VariableSetStmt {
         name: n,
         val: v,
-    }
+    },
 }
 
 var_value: syn::AConst<'input> = {
@@ -95,7 +96,7 @@ I_or_F_const: syn::NumVal<'input> = {
         } else {
             syn::NumVal::Float{neg: false, v: s}
         }
-    }
+    },
 }
 
 opt_boolean_or_string: syn::StrVal<'input> = {
@@ -124,6 +125,7 @@ ColId: syn::StrVal<'input> = {
 
 match {
     // keywords
+    r"[wW][iI][tT][hH]" => WITH,
     r"[sS][eE][lL][eE][cC][tT]" => SELECT,
     r"[aA][sS]" => AS,
     r"[cC][rR][eE][aA][tT][eE]" => CREATE,
@@ -136,6 +138,10 @@ match {
     r"[aA][bB][oO][rR][tT]" => ABORT_P,
     r"[cC][oO][mM][mM][iI][tT]" => COMMIT,
     r"[fF][aA][lL][sS][eE]" => FALSE_P,
+    r"[iI][nN][tT]" => INT_P,
+    r"[sS][mM][aA][lL][lL][iI][nN][tT]" => SMALLINT,
+    r"[tT][aA][bB][lL][eE]" => TABLE,
+    r"[vV][aA][rR][cC][hH][aA][rR]" => VARCHAR,
 } else {
     r"[a-z_][a-z0-9_]*" => LOWERCASE_ID,
 } else {
@@ -152,7 +158,7 @@ any_name: Vec<syn::StrVal<'input>> = {
     <s:ColId> <mut a:attrs> => {
         a.insert(0, s);
         a
-    }
+    },
 }
 
 attrs: Vec<syn::StrVal<'input>> = {
@@ -161,7 +167,7 @@ attrs: Vec<syn::StrVal<'input>> = {
     <mut s:attrs> "." <a:attr_name> => {
         s.push(a);
         s
-    }
+    },
 }
 
 attr_name: syn::StrVal<'input> = {
@@ -185,7 +191,7 @@ IDENT: syn::StrVal<'input> = {
 DefineTypeStmt: syn::DefineTypeStmt<'input> = {
     CREATE TYPE_P <n:any_name> => syn::DefineTypeStmt {
         defnames: n,
-        definition: None,
+        definition: Vec::new(),
     },
 
 }
@@ -275,7 +281,7 @@ target_list: Vec<syn::ResTarget<'input>> = {
     <mut l:target_list> "," <t:target_el> => {
         l.push(t);
         l
-    }
+    },
 }
 
 opt_target_list: Vec<syn::ResTarget<'input>> = {
@@ -287,7 +293,7 @@ opt_target_list: Vec<syn::ResTarget<'input>> = {
 simple_select: syn::SelectStmt<'input> = {
     SELECT <l:opt_target_list> => syn::SelectStmt {
         tlist: l,
-    }
+    },
 }
 
 select_no_parens: syn::SelectStmt<'input> = {
@@ -296,4 +302,117 @@ select_no_parens: syn::SelectStmt<'input> = {
 
 SelectStmt: syn::SelectStmt<'input> = {
     <s:select_no_parens> => s,
+}
+
+qualified_name: syn::RangeVar<'input> = {
+    <s: ColId> => syn::RangeVar {
+        catalogname: None,
+        schemaname: None,
+        relname: s,
+        alias: None,
+    },
+}
+
+Numeric: syn::TypeName<'input> = {
+    INT_P => syn::system_type_name("int4"),
+
+    SMALLINT => syn::system_type_name("int2"),
+}
+
+character: &'static str = {
+    VARCHAR => "varchar",
+}
+
+CharacterWithLength: syn::TypeName<'input> = {
+    <c: character> "(" <i: INTEGER> ")" => {
+        let mut tn = syn::system_type_name(c);
+        tn.typmods.push(i);
+        tn
+    },
+}
+
+CharacterWithoutLength: syn::TypeName<'input> = {
+    <c: character> => syn::system_type_name(c),
+}
+
+Character: syn::TypeName<'input> = {
+    <c: CharacterWithLength> => c,
+
+    <c: CharacterWithoutLength> => c,
+}
+
+SimpleTypename: syn::TypeName<'input> = {
+    <c: Character> => c,
+
+    <n: Numeric> => n,
+}
+
+Typename: syn::TypeName<'input> = {
+    <s: SimpleTypename> => s,
+}
+
+columnDef: syn::ColumnDef<'input> = {
+    <c: ColId> <t: Typename> => syn::ColumnDef {
+        colname: c,
+        typename: t,
+    },
+}
+
+TableElement: syn::ColumnDef<'input> = {
+    <c: columnDef> => c,
+}
+
+TableElementList: Vec<syn::ColumnDef<'input>> = {
+    <t: TableElement> => vec![t],
+
+    <mut tl: TableElementList> "," <t: TableElement> => {
+        tl.push(t);
+        tl
+    },
+}
+
+OptTableElementList: Vec<syn::ColumnDef<'input>> = {
+    <tl: TableElementList> => tl,
+
+    // EMPTY
+    => Vec::new(),
+}
+
+def_arg: syn::Value<'input> = {
+    <n: NumericOnly> => syn::Value::Num(n),
+
+    <s: Sconst> => syn::Value::Str(s),
+}
+
+reloption_elem: syn::DefElem<'input> = {
+    <c: ColLabel> "=" <d: def_arg> => syn::make_def_elem(c, d),
+}
+
+reloption_list: Vec<syn::DefElem<'input>> = {
+    <r: reloption_elem> => vec![r],
+
+    <mut rl: reloption_list> "," <r: reloption_elem> => {
+        rl.push(r);
+        rl
+    },
+}
+
+reloptions: Vec<syn::DefElem<'input>> = {
+    "(" <rl: reloption_list> ")" => rl,
+}
+
+OptWith: Vec<syn::DefElem<'input>> = {
+    WITH <rl: reloptions> => rl,
+
+    // EMPTY
+    => Vec::new(),
+}
+
+// PG: CreateStmt
+CreateTableStmt: syn::CreateTableStmt<'input> = {
+    CREATE TABLE <n: qualified_name> "(" <tl: OptTableElementList> ")" <w: OptWith> => syn::CreateTableStmt {
+        relation: n,
+        table_elts: tl,
+        opts: w,
+    },
 }
