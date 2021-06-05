@@ -13,15 +13,16 @@ use crate::catalog;
 use crate::datumblock::DatumBlock;
 use crate::executor::DestReceiver;
 use crate::parser::sem;
-use crate::protocol;
 use crate::utils::fmgr::{get_fn_addr, get_single_bytes, FmgrInfo};
-use crate::utils::{SessionState, TypMod, WorkerState};
+use crate::utils::{SessionState, WorkerState};
+use crate::{protocol, Oid};
 use std::debug_assert;
 use std::net::TcpStream;
 use std::rc::Rc;
 
 pub mod ckpt;
 pub mod clog;
+pub mod lmgr;
 pub mod redo;
 mod slru;
 pub mod sv;
@@ -67,12 +68,7 @@ impl DestReceiver for DestRemote<'_> {
                 None => "", // TupleDescInitEntry() set name to empty if target.resname is None.
                 Some(v) => v,
             };
-            fields.push(protocol::FieldDesc::new(
-                fieldname,
-                typoid,
-                TypMod::none(),
-                typlen,
-            ));
+            fields.push(protocol::FieldDesc::new(fieldname, typoid, -1, typlen));
         }
         protocol::write_message(
             self.stream,
@@ -105,4 +101,15 @@ impl DestReceiver for DestRemote<'_> {
         );
         Ok(())
     }
+}
+
+pub struct TypeDesc {
+    pub id: Oid,
+    pub len: i16,
+    pub align: u8,
+    pub mode: i32,
+}
+
+pub struct TupleDesc {
+    pub desc: Vec<TypeDesc>,
 }

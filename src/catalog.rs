@@ -10,7 +10,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-use crate::utils::{SessionState, TypLen};
+use crate::utils::SessionState;
 use crate::{kbanyhow, Oid, OptOid};
 
 pub mod namespace;
@@ -195,52 +195,85 @@ pub fn get_proc(state: &SessionState, oid: Oid) -> anyhow::Result<FormProc> {
     ret
 }
 
-struct FormType {
-    typoutput: Oid,
-    typlen: TypLen,
-    typisdefined: bool,
+pub struct FormType {
+    pub id: Oid,
+    pub len: i16,
+    pub align: u8,
+    pub isdefined: bool,
+    pub input: Oid,
+    pub output: Oid,
+    pub modin: Oid,
+    pub modout: Oid,
 }
 
-fn get_type(state: &SessionState, oid: Oid) -> anyhow::Result<FormType> {
-    let mut ret: anyhow::Result<FormType> = Err(kbanyhow!(
-        ERRCODE_UNDEFINED_OBJECT,
-        "lookup failed for type {}",
-        oid
-    ));
-    state.metaconn.iterate(
-        format!(
-            "select typoutput, typisdefined, typlen from kb_type where oid = {}",
-            oid
-        ),
-        |row| {
-            ret = Ok(FormType {
-                typoutput: column_val(row, "typoutput").unwrap().parse().unwrap(),
-                typisdefined: column_val(row, "typisdefined")
+fn cond_get_type(state: &SessionState, cond: &str) -> anyhow::Result<Option<FormType>> {
+    let mut ret = None;
+    state
+        .metaconn
+        .iterate(format!("select * from kb_type where {}", cond), |row| {
+            ret = Some(FormType {
+                id: column_val(row, "oid").unwrap().parse().unwrap(),
+                align: column_val(row, "typalign").unwrap().parse().unwrap(),
+                input: column_val(row, "typinput").unwrap().parse().unwrap(),
+                output: column_val(row, "typoutput").unwrap().parse().unwrap(),
+                modin: column_val(row, "typmodin").unwrap().parse().unwrap(),
+                modout: column_val(row, "typmodout").unwrap().parse().unwrap(),
+                isdefined: column_val(row, "typisdefined")
                     .unwrap()
                     .parse::<i32>()
                     .unwrap()
                     == 1,
-                typlen: column_val(row, "typlen")
-                    .unwrap()
-                    .parse::<i16>()
-                    .unwrap()
-                    .into(),
+                len: column_val(row, "typlen").unwrap().parse::<i16>().unwrap(),
             });
             true
-        },
-    )?;
-    ret
+        })?;
+    return Ok(ret);
 }
 
-pub fn get_type_output_info(state: &SessionState, oid: Oid) -> anyhow::Result<(Oid, TypLen)> {
+fn get_type(state: &SessionState, oid: Oid) -> anyhow::Result<FormType> {
+    let ret: anyhow::Result<FormType> = Err(kbanyhow!(
+        ERRCODE_UNDEFINED_OBJECT,
+        "lookup failed for type {}",
+        oid
+    ));
+    let ftype = cond_get_type(state, &format!("oid = {}", oid))?;
+    if let Some(ftype) = ftype {
+        return Ok(ftype);
+    } else {
+        return ret;
+    }
+}
+
+pub fn qualname_get_type(
+    state: &SessionState,
+    nsoid: Oid,
+    typname: &str,
+) -> anyhow::Result<FormType> {
+    let ret: anyhow::Result<FormType> = Err(kbanyhow!(
+        ERRCODE_UNDEFINED_OBJECT,
+        "lookup failed for type {}",
+        typname
+    ));
+    let ftype = cond_get_type(
+        state,
+        &format!("typname = '{}' and typnamespace = {}", typname, nsoid),
+    )?;
+    if let Some(ftype) = ftype {
+        return Ok(ftype);
+    } else {
+        return ret;
+    }
+}
+
+pub fn get_type_output_info(state: &SessionState, oid: Oid) -> anyhow::Result<(Oid, i16)> {
     let formtype = get_type(state, oid)?;
-    if !formtype.typisdefined {
+    if !formtype.isdefined {
         Err(kbanyhow!(
             ERRCODE_UNDEFINED_OBJECT,
             "type {} is only a shell",
             oid
         ))
     } else {
-        Ok((formtype.typoutput, formtype.typlen))
+        Ok((formtype.output, formtype.len))
     }
 }

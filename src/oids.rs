@@ -10,46 +10,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-#[repr(u32)]
-#[derive(Clone, Copy)]
-pub enum OidEnum {
-    Template0Db = 1,
-    KuiBaDb = 2,
-    KBCatalogNamespace = 11,
-    BOOLOID = 16,
-    BoolInProc = 1242,
-    BoolOutProc = 1243,
-    BYTEAOID = 17,
-    ByteaInProc = 1244,
-    ByteaOutProc = 31,
-    INT8OID = 20,
-    Int8InProc = 460,
-    Int8OutProc = 461,
-    INT2OID = 21,
-    Int2InProc = 38,
-    Int2OutProc = 39,
-    INT4OID = 23,
-    Int4InProc = 42,
-    Int4OutProc = 43,
-    FLOAT4OID = 700,
-    Float4InProc = 200,
-    Float4OutProc = 201,
-    FLOAT8OID = 701,
-    Float8InProc = 214,
-    Float8OutProc = 215,
-    VARCHAROID = 1043,
-    VarcharInProc = 1046,
-    VarcharOutProc = 1047,
-    TypeRelationId = 1247,
-    AttributeRelationId = 1249,
-    ProcedureRelationId = 1255,
-    RelationRelationId = 1259,
-    DatabaseRelationId = 1262,
-    KBPublicNamespace = 2200,
-    NamespaceRelationId = 2615,
-    OperatorRelationId = 2617,
-    MaxOid = 16384, // The oid of system catalogs should be less than MaxOid.
-}
 
 pub type Oid = std::num::NonZeroU32;
 #[derive(Copy, Clone)]
@@ -70,8 +30,39 @@ impl std::convert::From<OptOid> for u32 {
     }
 }
 
-impl std::convert::From<OidEnum> for Oid {
-    fn from(val: OidEnum) -> Oid {
-        Oid::new(val as u32).unwrap()
-    }
-}
+pub const TEMPLATE0_DB: Oid = unsafe { Oid::new_unchecked(1) };
+pub const KUIBADB: Oid = unsafe { Oid::new_unchecked(2) };
+pub const KBCATLOGNS: Oid = unsafe { Oid::new_unchecked(11) };
+pub const BOOLOID: Oid = unsafe { Oid::new_unchecked(16) };
+pub const BOOLINPROC: Oid = unsafe { Oid::new_unchecked(1242) };
+pub const BOOLOUTPROC: Oid = unsafe { Oid::new_unchecked(1243) };
+pub const BYTEAOID: Oid = unsafe { Oid::new_unchecked(17) };
+pub const BYTEAINPROC: Oid = unsafe { Oid::new_unchecked(1244) };
+pub const BYTEAOUTPROC: Oid = unsafe { Oid::new_unchecked(31) };
+pub const INT8OID: Oid = unsafe { Oid::new_unchecked(20) };
+pub const INT8INPROC: Oid = unsafe { Oid::new_unchecked(460) };
+pub const INT8OUTPROC: Oid = unsafe { Oid::new_unchecked(461) };
+pub const INT2OID: Oid = unsafe { Oid::new_unchecked(21) };
+pub const INT2INPROC: Oid = unsafe { Oid::new_unchecked(38) };
+pub const INT2OUTPROC: Oid = unsafe { Oid::new_unchecked(39) };
+pub const INT4OID: Oid = unsafe { Oid::new_unchecked(23) };
+pub const INT4INPROC: Oid = unsafe { Oid::new_unchecked(42) };
+pub const INT4OUTPROC: Oid = unsafe { Oid::new_unchecked(43) };
+pub const FLOAT4OID: Oid = unsafe { Oid::new_unchecked(700) };
+pub const FLOAT4INPROC: Oid = unsafe { Oid::new_unchecked(200) };
+pub const FLOAT4OUTPROC: Oid = unsafe { Oid::new_unchecked(201) };
+pub const FLOAT8OID: Oid = unsafe { Oid::new_unchecked(701) };
+pub const FLOAT8INPROC: Oid = unsafe { Oid::new_unchecked(214) };
+pub const FLOAT8OUTPROC: Oid = unsafe { Oid::new_unchecked(215) };
+pub const VARCHAROID: Oid = unsafe { Oid::new_unchecked(1043) };
+pub const VARCHARINPROC: Oid = unsafe { Oid::new_unchecked(1046) };
+pub const VARCHAROUTPROC: Oid = unsafe { Oid::new_unchecked(1047) };
+pub const TYPERELID: Oid = unsafe { Oid::new_unchecked(1247) };
+pub const ATTRRELID: Oid = unsafe { Oid::new_unchecked(1249) };
+pub const PROCRELID: Oid = unsafe { Oid::new_unchecked(1255) };
+pub const RELRELID: Oid = unsafe { Oid::new_unchecked(1259) };
+pub const DBRELID: Oid = unsafe { Oid::new_unchecked(1262) };
+pub const KBPUBLICNS: Oid = unsafe { Oid::new_unchecked(2200) };
+pub const NSRELID: Oid = unsafe { Oid::new_unchecked(2615) };
+pub const OPRELID: Oid = unsafe { Oid::new_unchecked(2617) };
+// pub const MaxOid: Oid = unsafe {Oid::new_unchecked(16384)};  // The oid of system catalogs should be less than MaxOid.

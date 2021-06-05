@@ -13,7 +13,7 @@ use super::syn;
 use crate::catalog::namespace::SessionExt as NamespaceSessionExt;
 use crate::catalog::{get_proc, FormOperator};
 use crate::datumblock::DatumBlockSingle;
-use crate::utils::{AttrNumber, SessionState, TypLen, TypMod};
+use crate::utils::{AttrNumber, SessionState};
 use crate::{kbbail, Oid, OptOid, FLOAT8OID, INT4OID, INT8OID, VARCHAROID};
 use std::convert::TryInto;
 use std::debug_assert;
@@ -31,9 +31,10 @@ pub enum UtilityStmt<'syn, 'input> {
 
 #[derive(Debug, Clone)]
 pub struct Const {
+    // todo!(盏一): use TypeDesc
     pub consttype: Oid,
-    pub consttypmod: TypMod,
-    pub constlen: TypLen,
+    pub consttypmod: i32,
+    pub constlen: i16,
     pub constvalue: DatumBlockSingle,
     pub loc: syn::Location,
 }
@@ -67,12 +68,12 @@ impl Const {
             syn::Value::Str(v) => (
                 DatumBlockSingle::new_bytes(v.as_str().as_bytes()),
                 VARCHAROID,
-                TypLen::Var,
+                -1,
             ),
         };
         Ok(Const {
             consttype: consttype.into(),
-            consttypmod: TypMod::none(),
+            consttypmod: -1,
             constlen,
             constvalue,
             loc: input.loc,

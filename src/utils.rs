@@ -10,6 +10,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+use crate::access::lmgr;
 use crate::access::{clog, wal, xact};
 use crate::catalog::namespace::SessionStateExt as NameSpaceSessionStateExt;
 use crate::Oid;
@@ -18,13 +19,12 @@ use anyhow::anyhow;
 use chrono::offset::Local;
 use chrono::DateTime;
 use std::cell::RefCell;
-use std::debug_assert;
 use std::fs::File;
 use std::io::Write;
 use std::net::TcpStream;
 use std::num::NonZeroU16;
 use std::path::Path;
-use std::sync::{atomic::AtomicBool, Arc};
+use std::sync::{atomic::AtomicBool, atomic::AtomicU32, Arc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::NamedTempFile;
 use thread_local::ThreadLocal;
@@ -99,6 +99,9 @@ pub struct SessionState {
     pub stmt_startts: KBSystemTime,
     pub dead: bool,
     pub nsstate: NameSpaceSessionStateExt,
+    pub oid_creator: Option<&'static AtomicU32>, // nextoid
+    pub lmgrg: &'static lmgr::GlobalStateExt,
+    pub lmgrs: lmgr::SessionStateExt<'static>,
 }
 
 impl SessionState {
@@ -126,6 +129,9 @@ impl SessionState {
             xact: xact::SessionStateExt::new(gstate.xact, now),
             wal: gstate.wal,
             worker_cache: gstate.worker_cache,
+            lmgrg: gstate.lmgr,
+            lmgrs: lmgr::SessionStateExt::new(),
+            oid_creator: gstate.oid_creator,
         }
     }
 
@@ -145,63 +151,6 @@ impl SessionState {
     }
     pub fn new_worker(&self) -> Worker {
         Worker::new(WorkerState::new(self))
-    }
-}
-
-// The maximum length of a fixed length type is 2 ^ 15 - 1, so this will never overflow
-#[derive(Copy, Clone, Debug)]
-pub enum TypLen {
-    Var,
-    Fixed(NonZeroU16),
-}
-
-impl std::convert::From<i16> for TypLen {
-    fn from(val: i16) -> Self {
-        if val < 0 {
-            TypLen::Var
-        } else {
-            TypLen::Fixed(NonZeroU16::new(val as u16).unwrap())
-        }
-    }
-}
-
-impl std::convert::From<TypLen> for i16 {
-    fn from(val: TypLen) -> Self {
-        match val {
-            TypLen::Var => -1,
-            TypLen::Fixed(v) => v.get() as i16,
-        }
-    }
-}
-
-// We don't want to increase the size of the TypMod
-#[derive(Clone, Copy, Debug)]
-pub struct TypMod(i32);
-
-impl TypMod {
-    pub fn none() -> TypMod {
-        TypMod(-1)
-    }
-
-    pub fn is_none(self) -> bool {
-        self.0 < 0
-    }
-
-    pub fn get(self) -> i32 {
-        debug_assert!(!self.is_none());
-        self.0
-    }
-}
-
-impl std::convert::From<i32> for TypMod {
-    fn from(val: i32) -> Self {
-        Self(val)
-    }
-}
-
-impl std::convert::From<TypMod> for i32 {
-    fn from(val: TypMod) -> i32 {
-        val.0
     }
 }
 

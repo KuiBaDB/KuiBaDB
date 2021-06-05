@@ -201,7 +201,6 @@ pub struct Alias<'input> {
 
 #[derive(Debug)]
 pub struct RangeVar<'input> {
-    pub catalogname: Option<StrVal<'input>>,
     pub schemaname: Option<StrVal<'input>>,
     pub relname: StrVal<'input>,
     pub alias: Option<Alias<'input>>,

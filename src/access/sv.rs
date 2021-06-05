@@ -84,6 +84,7 @@ impl Destory for SupVer {
 }
 
 const MANIFEST_VER: u32 = 20181218;
+pub const INIT_MANIFEST_DAT: [u8; 4] = [0xe2, 0xf0, 0x33, 0x01];
 
 fn read_level_files<T>(
     cursor: &mut Cursor<&[u8]>,
@@ -179,8 +180,8 @@ fn write_manifest(path: &str, sv: &SupVer) -> anyhow::Result<()> {
     return persist(path, cursor.get_ref());
 }
 
-fn get_minafest_path(db: Oid, table: Oid) -> String {
-    format!("{}/{}/manifest", db, table)
+pub fn get_minafest_path(db: Oid, table: Oid) -> String {
+    format!("base/{}/{}/manifest", db, table)
 }
 
 impl sb::Value for SupVer {

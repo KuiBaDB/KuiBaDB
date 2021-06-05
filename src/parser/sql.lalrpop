@@ -306,7 +306,6 @@ SelectStmt: syn::SelectStmt<'input> = {
 
 qualified_name: syn::RangeVar<'input> = {
     <s: ColId> => syn::RangeVar {
-        catalogname: None,
         schemaname: None,
         relname: s,
         alias: None,

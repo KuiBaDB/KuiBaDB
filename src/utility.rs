@@ -11,6 +11,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 use crate::access::xact::SessionExt as xact_sess_ext;
+use crate::commands::tablecmds::create_table;
 use crate::commands::typecmds::define_type;
 use crate::parser::{sem, syn};
 use crate::{guc, kbanyhow, kbbail, SessionState};
@@ -165,12 +166,6 @@ pub fn process_utility(
         &sem::UtilityStmt::VariableShow(v) => get_guc(v, state),
         &sem::UtilityStmt::DefineType(v) => define_type(v, state),
         &sem::UtilityStmt::Tran(v) => tran(v, state),
-        &sem::UtilityStmt::CreateTable(v) => {
-            println!("{:?}", v);
-            return Ok(Response {
-                resp: None,
-                tag: "CREATE TYPE",
-            });
-        }
+        &sem::UtilityStmt::CreateTable(v) => create_table(v, state),
     }
 }

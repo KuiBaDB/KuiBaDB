@@ -10,9 +10,11 @@
 // limitations under the License.
 use super::clog::{WorkerExt as clog_worker_ext, XidStatus};
 use super::redo::RedoState;
-use super::wal::{self, Lsn, RecordHdr, Rmgr, RmgrId};
+use super::wal::{self, Lsn, RecordHdr, Rmgr, RmgrId, XlogInfo};
+use crate::access::lmgr::SessionExt as LMGRSessionExt;
 use crate::protocol::XactStatus;
 use crate::utils::{dec_xid, inc_xid, KBSystemTime, SessionState, Xid};
+use crate::Oid;
 use anyhow::{anyhow, bail};
 use log;
 use std::borrow::Borrow;
@@ -412,6 +414,7 @@ fn commit_tran(sess: &mut SessionState) -> anyhow::Result<()> {
     tctx(sess).state = TranState::Commit;
     record_tran_commit(sess);
     end_xid(sess);
+    sess.lock_release_all();
     tctx(sess).state = TranState::Default;
     return Ok(());
 }
@@ -423,6 +426,7 @@ fn abort_tran(sess: &mut SessionState) -> anyhow::Result<()> {
     tctx(sess).state = TranState::Abort;
     record_tran_abort(sess)?;
     end_xid(sess);
+    sess.lock_release_all();
     return Ok(());
 }
 // CleanupTransaction
@@ -438,6 +442,12 @@ fn cleanup_tran(sess: &mut SessionState) -> anyhow::Result<()> {
     debug_assert!(sctx(sess).snap.is_none());
     tctx(sess).state = TranState::Default;
     return Ok(());
+}
+
+fn log_nextoid(sess: &mut SessionState, nextoid: u32) {
+    let rec = wal::start_record(&nextoid);
+    sess.insert_record(RmgrId::Xlog, XlogInfo::NextOid as u8, rec);
+    return;
 }
 
 pub trait SessionExt {
@@ -464,6 +474,7 @@ pub trait SessionExt {
         page_lsn: Lsn,
     ) -> Option<Lsn>;
     fn xact_status(&self) -> XactStatus;
+    fn new_oid(&mut self) -> Oid;
 }
 
 impl SessionExt for SessionState {
@@ -658,6 +669,15 @@ impl SessionExt for SessionState {
                 XactStatus::Failed
             }
         }
+    }
+    fn new_oid(&mut self) -> Oid {
+        let curoid = self.oid_creator.unwrap().fetch_add(1, Relaxed);
+        let nextoid = curoid + 1;
+        if nextoid == 0 {
+            panic!("no more oid")
+        }
+        log_nextoid(self, nextoid);
+        return Oid::new(curoid).unwrap();
     }
 }
 

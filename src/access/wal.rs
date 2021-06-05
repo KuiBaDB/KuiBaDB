@@ -1081,12 +1081,15 @@ pub fn init(
 #[derive(Copy, Clone, Debug)]
 pub enum XlogInfo {
     Ckpt = 0x10,
+    NextOid = 0x30,
 }
 
 impl From<u8> for XlogInfo {
     fn from(value: u8) -> Self {
         if value == XlogInfo::Ckpt as u8 {
             XlogInfo::Ckpt
+        } else if value == XlogInfo::NextOid as u8 {
+            XlogInfo::NextOid
         } else {
             panic!("try from u8 to XlogInfo failed. value={}", value)
         }
@@ -1101,6 +1104,10 @@ impl XlogRmgr {
     }
 }
 
+fn get_oid(d: &[u8]) -> Oid {
+    unsafe { *(d.as_ptr() as *const Oid) }
+}
+
 impl Rmgr for XlogRmgr {
     fn name(&self) -> &'static str {
         "XLOG"
@@ -1113,6 +1120,11 @@ impl Rmgr for XlogRmgr {
                 state.set_nextxid(ckpt.nextxid);
                 Ok(())
             }
+            XlogInfo::NextOid => {
+                let oid = get_oid(data);
+                state.set_nextoid(oid);
+                Ok(())
+            }
         }
     }
 
@@ -1121,6 +1133,10 @@ impl Rmgr for XlogRmgr {
             XlogInfo::Ckpt => {
                 let ckpt = get_ckpt(data);
                 write!(out, "CHECKPOINT {:?}", ckpt).unwrap();
+            }
+            XlogInfo::NextOid => {
+                let oid = get_oid(data);
+                write!(out, "NEXTOID {}", oid).unwrap();
             }
         }
     }

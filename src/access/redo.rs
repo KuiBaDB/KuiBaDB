@@ -3,7 +3,7 @@ use crate::access::{wal, wal::RmgrId, xact, xact::XactRmgr};
 use crate::utils::{inc_xid, Worker, Xid};
 use crate::{guc, make_static, GlobalState, Oid, REDO_SESSID};
 use anyhow::anyhow;
-use std::sync::atomic::{AtomicU32, AtomicU64};
+use std::sync::atomic::AtomicU32;
 
 pub struct RedoState {
     nextxid: Xid,
@@ -17,6 +17,12 @@ impl RedoState {
             nextxid,
             nextoid,
             worker,
+        }
+    }
+
+    pub fn set_nextoid(&mut self, nextoid: Oid) {
+        if self.nextoid < nextoid {
+            self.nextoid = nextoid;
         }
     }
 
@@ -78,7 +84,6 @@ pub fn redo(datadir: &str) -> anyhow::Result<GlobalState> {
 
     walreader.storage.recycle(walreader.endlsn)?;
     g.oid_creator = Some(make_static(AtomicU32::new(redo_state.nextoid.get())));
-    g.xid_creator = Some(make_static(AtomicU64::new(redo_state.nextxid.get())));
     let readlsn = match walreader.readlsn {
         None => return Err(anyhow!("walreader.readlsn is None")),
         Some(r) => r,

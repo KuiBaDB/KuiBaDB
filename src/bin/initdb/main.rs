@@ -327,15 +327,15 @@ fn create_global_metadata() {
     insert into kb_database values({}, 'kuiba', 0, 1, 0);
     ",
         attrs_to_ddl(&KB_DATABASE_ATTRS),
-        Template0Db as u32,
-        KuiBaDb as u32
+        TEMPLATE0_DB,
+        KUIBADB
     ))
     .unwrap();
 }
 
 // base
 fn create_template0_metadata() {
-    let template0dir = format!("base/{}", Template0Db as u32);
+    let template0dir = format!("base/{}", TEMPLATE0_DB);
     std::fs::create_dir_all(&template0dir).unwrap();
     let conn = sqlite::open(format!("{}/meta.db", &template0dir)).unwrap();
 
@@ -346,8 +346,8 @@ fn create_template0_metadata() {
     insert into kb_namespace values({}, 'public');
     ",
         attrs_to_ddl(&KB_NAMESPACE_ATTRS),
-        KBCatalogNamespace as u32,
-        KBPublicNamespace as u32
+        KBCATLOGNS,
+        KBPUBLICNS
     ))
     .unwrap();
 
@@ -363,27 +363,33 @@ fn create_template0_metadata() {
     insert into kb_class values({}, 'kb_type', {}, 0, 114, {}, 0);
     ",
         attrs_to_ddl(&KB_CLASS_ATTRS),
-        RelationRelationId as u32,
-        KBCatalogNamespace as u32,
+        RELRELID,
+        KBCATLOGNS,
         KB_CLASS_ATTRS.len(),
-        AttributeRelationId as u32,
-        KBCatalogNamespace as u32,
+        ATTRRELID,
+        KBCATLOGNS,
         KB_ATTRIBUTE_ATTRS.len(),
-        OperatorRelationId as u32,
-        KBCatalogNamespace as u32,
+        OPRELID,
+        KBCATLOGNS,
         KB_OPERATOR_ATTRS.len(),
-        DatabaseRelationId as u32,
-        KBCatalogNamespace as u32,
+        DBRELID,
+        KBCATLOGNS,
         KB_DATABASE_ATTRS.len(),
-        NamespaceRelationId as u32,
-        KBCatalogNamespace as u32,
+        NSRELID,
+        KBCATLOGNS,
         KB_NAMESPACE_ATTRS.len(),
-        ProcedureRelationId as u32,
-        KBCatalogNamespace as u32,
+        PROCRELID,
+        KBCATLOGNS,
         KB_PROC_ATTRS.len(),
-        TypeRelationId as u32,
-        KBCatalogNamespace as u32,
+        TYPERELID,
+        KBCATLOGNS,
         KB_TYPE_ATTRS.len(),
+    ))
+    .unwrap();
+
+    conn.execute(format!(
+        "create table kb_attribute({}, unique (attrelid, attnum), unique (attrelid, attname));",
+        attrs_to_ddl(&KB_ATTRIBUTE_ATTRS)
     ))
     .unwrap();
 
@@ -396,47 +402,47 @@ fn create_template0_metadata() {
     conn.execute(format!(
         "
     insert into kb_type values
-    ({}, 'bool', {}, 1, 1, 1, {}, {}, 0, 0),
-    ({}, 'bytea', {}, -1, 1, 1, {}, {}, 0, 0),
-    ({}, 'int8', {}, 8, 8, 1, {}, {}, 0, 0),
-    ({}, 'int2', {}, 2, 2, 1, {}, {}, 0, 0),
-    ({}, 'int4', {}, 4, 4, 1, {}, {}, 0, 0),
-    ({}, 'float4', {}, 4, 4, 1, {}, {}, 0, 0),
-    ({}, 'float8', {}, 8, 8, 1, {}, {}, 0, 0),
-    ({}, 'varchar', {}, -1, 1, 1, {}, {}, 0, 0);
+    ({}, 'bool', {}, 1, 1, 1, {}, {}, 1, 1),
+    ({}, 'bytea', {}, -1, 1, 1, {}, {}, 1, 1),
+    ({}, 'int8', {}, 8, 8, 1, {}, {}, 1, 1),
+    ({}, 'int2', {}, 2, 2, 1, {}, {}, 1, 1),
+    ({}, 'int4', {}, 4, 4, 1, {}, {}, 1, 1),
+    ({}, 'float4', {}, 4, 4, 1, {}, {}, 1, 1),
+    ({}, 'float8', {}, 8, 8, 1, {}, {}, 1, 1),
+    ({}, 'varchar', {}, -1, 1, 1, {}, {}, 1, 1);
     ",
-        BOOLOID as u32,
-        KBCatalogNamespace as u32,
-        BoolInProc as u32,
-        BoolOutProc as u32,
-        BYTEAOID as u32,
-        KBCatalogNamespace as u32,
-        ByteaInProc as u32,
-        ByteaOutProc as u32,
-        INT8OID as u32,
-        KBCatalogNamespace as u32,
-        Int8InProc as u32,
-        Int8OutProc as u32,
-        INT2OID as u32,
-        KBCatalogNamespace as u32,
-        Int2InProc as u32,
-        Int2OutProc as u32,
-        INT4OID as u32,
-        KBCatalogNamespace as u32,
-        Int4InProc as u32,
-        Int4OutProc as u32,
-        FLOAT4OID as u32,
-        KBCatalogNamespace as u32,
-        Float4InProc as u32,
-        Float4OutProc as u32,
-        FLOAT8OID as u32,
-        KBCatalogNamespace as u32,
-        Float8InProc as u32,
-        Float8OutProc as u32,
-        VARCHAROID as u32,
-        KBCatalogNamespace as u32,
-        VarcharInProc as u32,
-        VarcharOutProc as u32,
+        BOOLOID,
+        KBCATLOGNS,
+        BOOLINPROC,
+        BOOLOUTPROC,
+        BYTEAOID,
+        KBCATLOGNS,
+        BYTEAINPROC,
+        BYTEAOUTPROC,
+        INT8OID,
+        KBCATLOGNS,
+        INT8INPROC,
+        INT8OUTPROC,
+        INT2OID,
+        KBCATLOGNS,
+        INT2INPROC,
+        INT2OUTPROC,
+        INT4OID,
+        KBCATLOGNS,
+        INT4INPROC,
+        INT4OUTPROC,
+        FLOAT4OID,
+        KBCATLOGNS,
+        FLOAT4INPROC,
+        FLOAT4OUTPROC,
+        FLOAT8OID,
+        KBCATLOGNS,
+        FLOAT8INPROC,
+        FLOAT8OUTPROC,
+        VARCHAROID,
+        KBCATLOGNS,
+        VARCHARINPROC,
+        VARCHAROUTPROC,
     ))
     .unwrap();
 
@@ -887,8 +893,8 @@ fn create_template0_metadata() {
 }
 
 fn create_kuiba_metadata() {
-    let datadir = format!("base/{}", KuiBaDb as u32);
-    let template0dir = format!("base/{}", Template0Db as u32);
+    let datadir = format!("base/{}", KUIBADB);
+    let template0dir = format!("base/{}", TEMPLATE0_DB);
     std::fs::create_dir_all(&datadir).unwrap();
     std::fs::copy(
         format!("{}/meta.db", &template0dir),

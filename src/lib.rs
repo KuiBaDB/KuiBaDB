@@ -10,6 +10,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+use access::lmgr;
 use access::{clog, wal, xact, xact::SessionExt as xact_sess_ext};
 use anyhow::Context;
 use log;
@@ -26,7 +27,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, Ordering::Re
 use std::sync::{Arc, Condvar, Mutex};
 use stderrlog::{ColorChoice, Timestamp};
 use thread_local::ThreadLocal;
-use utils::{err::errcode, AttrNumber, SessionState, TypLen, TypMod, WorkerCache};
+use utils::{err::errcode, AttrNumber, SessionState, WorkerCache};
 
 pub mod access;
 pub mod catalog;
@@ -64,8 +65,7 @@ pub fn init_log() {
 
 mod oids;
 
-pub use oids::OidEnum::*;
-pub use oids::{Oid, OptOid};
+pub use oids::*;
 pub type FileId = std::num::NonZeroU32;
 
 pub struct SelectedSliceIter<'a, T, IdxIter> {
@@ -433,8 +433,8 @@ fn write_str_response(resp: &utility::StrResp, stream: &mut TcpStream) {
             fields: &[protocol::FieldDesc::new(
                 &resp.name,
                 VARCHAROID.into(),
-                TypMod::none(),
-                TypLen::Var,
+                -1,
+                -1,
             )],
         },
     );
@@ -518,6 +518,7 @@ fn make_static<T>(v: T) -> &'static T {
 #[derive(Clone)]
 pub struct GlobalState {
     pub fmgr_builtins: &'static HashMap<Oid, utils::fmgr::KBFunction>,
+    pub lmgr: &'static lmgr::GlobalStateExt,
     pub clog: &'static clog::GlobalStateExt,
     pub cancelmap: &'static Mutex<CancelMap>,
     pub gucstate: Arc<guc::GucState>,
@@ -525,7 +526,6 @@ pub struct GlobalState {
     pub wal: Option<&'static wal::GlobalStateExt>,
     pub xact: Option<&'static xact::GlobalStateExt>,
     pub oid_creator: Option<&'static AtomicU32>, // nextoid
-    pub xid_creator: Option<&'static AtomicU64>, // nextxid
 }
 
 #[cfg(test)]
@@ -539,10 +539,10 @@ impl GlobalState {
             fmgr_builtins: make_static(utils::fmgr::get_fmgr_builtins()),
             cancelmap: make_static(Mutex::<CancelMap>::default()),
             clog: make_static(clog::init(&gucstate)),
+            lmgr: make_static(lmgr::GlobalStateExt::new()),
             gucstate: gucstate,
             worker_cache: make_static(ThreadLocal::new()),
             oid_creator: None,
-            xid_creator: None,
             wal: None,
             xact: None,
         }

@@ -10,7 +10,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-use crate::utils::{TypLen, TypMod};
 use crate::{guc, AttrNumber};
 use crate::{Oid, OptOid};
 use byteorder::{NetworkEndian, ReadBytesExt, WriteBytesExt};
@@ -442,14 +441,14 @@ pub struct FieldDesc<'a> {
     name: &'a str,
     reloid: OptOid,
     typoid: Oid,
-    typmod: TypMod,
+    typmod: i32,
     attnum: Option<AttrNumber>,
-    typlen: TypLen,
+    typlen: i16,
     format: Format,
 }
 
 impl FieldDesc<'_> {
-    pub const fn new(name: &str, typoid: Oid, typmod: TypMod, typlen: TypLen) -> FieldDesc<'_> {
+    pub const fn new(name: &str, typoid: Oid, typmod: i32, typlen: i16) -> FieldDesc<'_> {
         FieldDesc {
             name,
             reloid: OptOid(None),

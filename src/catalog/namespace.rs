@@ -10,7 +10,10 @@
 // limitations under the License.
 
 use super::column_val;
+use crate::access::lmgr::LockMode;
+use crate::access::lmgr::SessionExt as LMGRSessionExt;
 use crate::catalog::{get_oper, get_opers, FormOperator};
+use crate::catalog::{qualname_get_type, FormType};
 use crate::guc;
 use crate::parser::syn;
 use crate::utils::SessionState;
@@ -35,6 +38,12 @@ pub trait SessionExt {
         names: &'a Vec<syn::StrVal>,
     ) -> anyhow::Result<(Oid, &'a str)>;
 
+    // RangeVarGetCreationNamespace
+    fn rv_get_create_ns(&mut self, rv: &syn::RangeVar<'_>) -> anyhow::Result<Oid>;
+
+    // RangeVarGetAndCheckCreationNamespace
+    fn rv_get_and_chk_create_ns(&mut self, rv: &syn::RangeVar<'_>) -> anyhow::Result<Oid>;
+
     fn get_namespace_oid(&self, nspname: &str) -> anyhow::Result<Oid>;
 
     // OpernameGetOprid
@@ -48,6 +57,21 @@ pub trait SessionExt {
     fn get_search_path(&mut self) -> &Vec<Oid>;
 
     fn lookup_explicit_namespace(&self, nspname: &str) -> anyhow::Result<Oid>;
+
+    // TypenameGetTypidExtended
+    fn typname_get_type(&mut self, typname: &str) -> anyhow::Result<FormType>;
+}
+
+fn oid_is_ns(sess: &SessionState, nsoid: Oid) -> anyhow::Result<bool> {
+    let mut isns = false;
+    sess.metaconn.iterate(
+        format!("select oid from kb_namespace where oid = {}", nsoid),
+        |_row| {
+            isns = true;
+            true
+        },
+    )?;
+    return Ok(isns);
 }
 
 impl SessionExt for SessionState {
@@ -118,7 +142,7 @@ impl SessionExt for SessionState {
             }
         }
         Arc::make_mut(&mut self.gucstate).base_search_path_valid = true;
-        &self.nsstate.search_path
+        return &self.nsstate.search_path;
     }
 
     fn lookup_explicit_namespace(&self, nspname: &str) -> anyhow::Result<Oid> {
@@ -151,6 +175,47 @@ impl SessionExt for SessionState {
             opername,
             oprleft,
             oprright
+        );
+    }
+
+    fn rv_get_create_ns(&mut self, rv: &syn::RangeVar<'_>) -> anyhow::Result<Oid> {
+        if let Some(ref sn) = rv.schemaname {
+            return self.get_namespace_oid(sn);
+        }
+        let oids = self.get_search_path();
+        if let Some(&oid) = oids.first() {
+            return Ok(oid);
+        } else {
+            kbbail!(
+                ERRCODE_UNDEFINED_SCHEMA,
+                "no schema has been selected to create in"
+            );
+        }
+    }
+
+    fn rv_get_and_chk_create_ns(&mut self, rv: &syn::RangeVar<'_>) -> anyhow::Result<Oid> {
+        let nsoid = self.rv_get_create_ns(rv)?;
+        self.lock_ns(nsoid, LockMode::AccessShare);
+        if !oid_is_ns(self, nsoid)? {
+            kbbail!(
+                ERRCODE_UNDEFINED_SCHEMA,
+                "no schema has been selected to create in"
+            );
+        }
+        return Ok(nsoid);
+    }
+
+    fn typname_get_type(&mut self, typname: &str) -> anyhow::Result<FormType> {
+        self.get_search_path();
+        for &nsoid in &self.nsstate.search_path {
+            if let Ok(t) = qualname_get_type(self, nsoid, typname) {
+                return Ok(t);
+            }
+        }
+        kbbail!(
+            ERRCODE_UNDEFINED_OBJECT,
+            "type \"{}\" does not exist",
+            typname
         );
     }
 }
