@@ -12,7 +12,7 @@
 use super::column_val;
 use crate::access::lmgr::LockMode;
 use crate::access::lmgr::SessionExt as LMGRSessionExt;
-use crate::catalog::{get_oper, get_opers, FormOperator};
+use crate::catalog::{self, get_oper, get_opers, FormOperator};
 use crate::catalog::{qualname_get_type, FormType};
 use crate::guc;
 use crate::parser::syn;
@@ -59,19 +59,29 @@ pub trait SessionExt {
     fn lookup_explicit_namespace(&self, nspname: &str) -> anyhow::Result<Oid>;
 
     // TypenameGetTypidExtended
-    fn typname_get_type(&mut self, typname: &str) -> anyhow::Result<FormType>;
+    fn typname_get_type(&mut self, typname: &str) -> anyhow::Result<Option<FormType>>;
+
+    // RangeVarGetRelidExtended
+    fn rv_get_oid(&mut self, rv: &syn::RangeVar<'_>, mode: LockMode) -> anyhow::Result<Oid>;
+
+    // RelnameGetRelid
+    fn relname_get_oid(&mut self, n: &str) -> anyhow::Result<Option<Oid>>;
 }
 
-fn oid_is_ns(sess: &SessionState, nsoid: Oid) -> anyhow::Result<bool> {
+fn oid_in_used(sess: &SessionState, oid: Oid, catalog: &str) -> anyhow::Result<bool> {
     let mut isns = false;
     sess.metaconn.iterate(
-        format!("select oid from kb_namespace where oid = {}", nsoid),
+        format!("select oid from {} where oid = {}", catalog, oid),
         |_row| {
             isns = true;
             true
         },
     )?;
     return Ok(isns);
+}
+
+fn oid_is_ns(sess: &SessionState, nsoid: Oid) -> anyhow::Result<bool> {
+    return oid_in_used(sess, nsoid, "kb_namespace");
 }
 
 impl SessionExt for SessionState {
@@ -196,6 +206,8 @@ impl SessionExt for SessionState {
     fn rv_get_and_chk_create_ns(&mut self, rv: &syn::RangeVar<'_>) -> anyhow::Result<Oid> {
         let nsoid = self.rv_get_create_ns(rv)?;
         self.lock_ns(nsoid, LockMode::AccessShare);
+        // Oid is never reused! so if the oid is still a namespace, it means that
+        // nsoid got by rv_get_create_ns() is still valid.
         if !oid_is_ns(self, nsoid)? {
             kbbail!(
                 ERRCODE_UNDEFINED_SCHEMA,
@@ -205,17 +217,47 @@ impl SessionExt for SessionState {
         return Ok(nsoid);
     }
 
-    fn typname_get_type(&mut self, typname: &str) -> anyhow::Result<FormType> {
+    fn typname_get_type(&mut self, typname: &str) -> anyhow::Result<Option<FormType>> {
         self.get_search_path();
         for &nsoid in &self.nsstate.search_path {
             if let Ok(t) = qualname_get_type(self, nsoid, typname) {
                 return Ok(t);
             }
         }
-        kbbail!(
-            ERRCODE_UNDEFINED_OBJECT,
-            "type \"{}\" does not exist",
-            typname
-        );
+        return Ok(None);
+    }
+
+    fn relname_get_oid(&mut self, n: &str) -> anyhow::Result<Option<Oid>> {
+        self.get_search_path();
+        for &nsoid in &self.nsstate.search_path {
+            let ret = catalog::relname_get_relid(self, n, nsoid)?;
+            if let Some(oid) = ret {
+                return Ok(Some(oid));
+            }
+        }
+        return Ok(None);
+    }
+
+    fn rv_get_oid(&mut self, rv: &syn::RangeVar<'_>, mode: LockMode) -> anyhow::Result<Oid> {
+        let reloid = if let Some(ref schema) = rv.schemaname {
+            let nsoid = self.get_namespace_oid(schema)?;
+            catalog::relname_get_relid(self, &rv.relname, nsoid)?
+        } else {
+            self.relname_get_oid(&rv.relname)?
+        };
+        if let Some(reloid) = reloid {
+            if mode == LockMode::NoLock {
+                return Ok(reloid);
+            }
+            self.lock_rel(reloid, mode);
+            if oid_in_used(self, reloid, "kb_class")? {
+                // Oid is never reused! so if the oid is still in kb_class, it means that
+                // nsoid got by relname_get_oid() is still valid.
+                return Ok(reloid);
+            } else {
+                self.unlock_rel(reloid, mode);
+            }
+        }
+        kbbail!(ERRCODE_UNDEFINED_TABLE, "relation {:?} does not exist", rv);
     }
 }

@@ -11,6 +11,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 use crate::access::xact::SessionExt as xact_sess_ext;
+use crate::commands::lockcmds::lock_stmt;
 use crate::commands::tablecmds::create_table;
 use crate::commands::typecmds::define_type;
 use crate::parser::{sem, syn};
@@ -167,5 +168,6 @@ pub fn process_utility(
         &sem::UtilityStmt::DefineType(v) => define_type(v, state),
         &sem::UtilityStmt::Tran(v) => tran(v, state),
         &sem::UtilityStmt::CreateTable(v) => create_table(v, state),
+        &sem::UtilityStmt::Lock(v) => lock_stmt(state, v),
     }
 }

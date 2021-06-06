@@ -11,7 +11,8 @@
 use crate::access::sv;
 use crate::access::{TupleDesc, TypeDesc};
 use crate::catalog::namespace::SessionExt;
-use crate::catalog::qualname_get_type;
+use crate::catalog::{qualname_get_type, FormType};
+use crate::kbbail;
 use crate::parser::syn;
 use crate::utility::Response;
 use crate::utils::{persist, sync_dir};
@@ -21,7 +22,10 @@ use anyhow::ensure;
 use std::fs;
 
 // LookupTypeNameExtended
-fn get_type_desc(state: &mut SessionState, typnam: &syn::TypeName<'_>) -> anyhow::Result<TypeDesc> {
+fn get_type_desc(
+    state: &mut SessionState,
+    typnam: &syn::TypeName<'_>,
+) -> anyhow::Result<Option<FormType>> {
     ensure!(typnam.typmods.is_empty(), "typemod is not support now");
     let (schema, typname) = state.deconstruct_qualname(&typnam.names)?;
     let formtype = if let Some(schema) = schema {
@@ -30,12 +34,28 @@ fn get_type_desc(state: &mut SessionState, typnam: &syn::TypeName<'_>) -> anyhow
     } else {
         state.typname_get_type(typname)?
     };
-    return Ok(TypeDesc {
-        id: formtype.id,
-        len: formtype.len,
-        align: formtype.align,
-        mode: -1,
-    });
+    return Ok(formtype);
+}
+
+// typenameType
+fn typname_type(state: &mut SessionState, typnam: &syn::TypeName<'_>) -> anyhow::Result<TypeDesc> {
+    let formtype = get_type_desc(state, typnam)?;
+    if let Some(formtype) = formtype {
+        if !formtype.isdefined {
+            kbbail!(
+                ERRCODE_UNDEFINED_OBJECT,
+                "type {:?} is only a shell",
+                typnam
+            );
+        }
+        return Ok(TypeDesc {
+            id: formtype.id,
+            len: formtype.len,
+            align: formtype.align,
+            mode: -1,
+        });
+    }
+    kbbail!(ERRCODE_UNDEFINED_OBJECT, "type {:?} does not exist", typnam);
 }
 
 // BuildDescForRelation
@@ -47,7 +67,7 @@ fn build_desc(
         desc: Vec::with_capacity(table_elts.len()),
     };
     for cf in table_elts {
-        ts.desc.push(get_type_desc(state, &cf.typename)?);
+        ts.desc.push(typname_type(state, &cf.typename)?);
     }
     return Ok(ts);
 }

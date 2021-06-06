@@ -484,6 +484,8 @@ pub trait SessionExt {
     fn new_oid(&mut self) -> Oid;
     // PreventInTransactionBlock
     fn prevent_in_transblock(&self, stmt: &str) -> anyhow::Result<()>;
+    // RequireTransactionBlock
+    fn require_transblock(&self, stmt: &str) -> anyhow::Result<()>;
 }
 
 impl SessionExt for SessionState {
@@ -694,6 +696,17 @@ impl SessionExt for SessionState {
             kbbail!(
                 ERRCODE_ACTIVE_SQL_TRANSACTION,
                 "{} cannot run inside a transaction block",
+                stmt
+            );
+        }
+        return Ok(());
+    }
+
+    fn require_transblock(&self, stmt: &str) -> anyhow::Result<()> {
+        if !is_transblock(self) {
+            kbbail!(
+                ERRCODE_NO_ACTIVE_SQL_TRANSACTION,
+                "{} can only be used in transaction blocks",
                 stmt
             );
         }

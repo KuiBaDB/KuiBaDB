@@ -10,6 +10,7 @@
 // limitations under the License.
 
 // 'input lifetime is the lifetime of query inputted by the user
+use crate::access::lmgr::LockMode;
 
 #[derive(Debug)]
 pub enum StrVal<'input> {
@@ -93,6 +94,7 @@ pub enum Stmt<'input> {
     Select(SelectStmt<'input>),
     Tran(TranStmt),
     CreateTable(CreateTableStmt<'input>),
+    Lock(LockStmt<'input>),
     Empty,
 }
 
@@ -231,4 +233,11 @@ pub struct CreateTableStmt<'input> {
     pub relation: RangeVar<'input>,
     pub table_elts: Vec<ColumnDef<'input>>,
     pub opts: Vec<DefElem<'input>>,
+}
+
+// PG CreateStmt
+#[derive(Debug)]
+pub struct LockStmt<'input> {
+    pub rels: Vec<RangeVar<'input>>,
+    pub mode: LockMode,
 }

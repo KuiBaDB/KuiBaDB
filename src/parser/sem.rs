@@ -27,6 +27,7 @@ pub enum UtilityStmt<'syn, 'input> {
     DefineType(&'syn syn::DefineTypeStmt<'input>),
     CreateTable(&'syn syn::CreateTableStmt<'input>),
     Tran(&'syn syn::TranStmt),
+    Lock(&'syn syn::LockStmt<'input>),
 }
 
 #[derive(Debug, Clone)]
@@ -317,6 +318,7 @@ pub fn kb_analyze<'syn, 'input>(
             transform_select_stmt(&mut pstate, v).map(|v| Stmt::Optimizable(v))
         }
         syn::Stmt::CreateTable(v) => Ok(Stmt::Utility(UtilityStmt::CreateTable(v))),
+        syn::Stmt::Lock(v) => Ok(Stmt::Utility(UtilityStmt::Lock(v))),
         syn::Stmt::Empty => unreachable!(),
     }
 }

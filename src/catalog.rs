@@ -11,7 +11,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 use crate::utils::SessionState;
-use crate::{kbanyhow, Oid, OptOid};
+use crate::{kbanyhow, Oid, OptOid, DBRELID};
 
 pub mod namespace;
 
@@ -248,21 +248,12 @@ pub fn qualname_get_type(
     state: &SessionState,
     nsoid: Oid,
     typname: &str,
-) -> anyhow::Result<FormType> {
-    let ret: anyhow::Result<FormType> = Err(kbanyhow!(
-        ERRCODE_UNDEFINED_OBJECT,
-        "lookup failed for type {}",
-        typname
-    ));
+) -> anyhow::Result<Option<FormType>> {
     let ftype = cond_get_type(
         state,
         &format!("typname = '{}' and typnamespace = {}", typname, nsoid),
     )?;
-    if let Some(ftype) = ftype {
-        return Ok(ftype);
-    } else {
-        return ret;
-    }
+    return Ok(ftype);
 }
 
 pub fn get_type_output_info(state: &SessionState, oid: Oid) -> anyhow::Result<(Oid, i16)> {
@@ -276,4 +267,27 @@ pub fn get_type_output_info(state: &SessionState, oid: Oid) -> anyhow::Result<(O
     } else {
         Ok((formtype.output, formtype.len))
     }
+}
+
+// get_relname_relid
+pub fn relname_get_relid(
+    state: &SessionState,
+    relname: &str,
+    nsoid: Oid,
+) -> anyhow::Result<Option<Oid>> {
+    let mut retoid: Option<Oid> = None;
+    let sql = format!(
+        "select oid from kb_class where relname = '{}' and relnamespace = {}",
+        relname, nsoid
+    );
+    state.metaconn.iterate(sql, |row| {
+        retoid = Some(column_val(row, "oid").unwrap().parse().unwrap());
+        true
+    })?;
+    return Ok(retoid);
+}
+
+// IsSharedRelation
+pub fn is_shared_rel(reloid: Oid) -> bool {
+    return reloid == DBRELID;
 }

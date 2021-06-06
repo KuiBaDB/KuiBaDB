@@ -9,6 +9,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod lockcmds;
-pub mod tablecmds;
-pub mod typecmds;
+use crate::catalog::namespace::SessionExt as NSSessionExt;
+use crate::parser::syn;
+use crate::utility::Response;
+use crate::utils::SessionState;
+use crate::xact::SessionExt as XACTSessionExt;
+
+pub fn lock_stmt(sess: &mut SessionState, lock: &syn::LockStmt<'_>) -> anyhow::Result<Response> {
+    sess.require_transblock("LOCK TABLE")?;
+    for rv in &lock.rels {
+        sess.rv_get_oid(rv, lock.mode)?;
+    }
+    return Ok(Response {
+        resp: None,
+        tag: "LOCK TABLE",
+    });
+}

@@ -10,6 +10,7 @@
 // limitations under the License.
 
 // WHY lmgr is placed in src/backend/storage/? Is lmgr a storage?
+use crate::catalog::is_shared_rel;
 use crate::utils::SessionState;
 use crate::{Oid, NSRELID};
 use std::collections::HashMap;
@@ -18,8 +19,8 @@ use std::sync::{Condvar, Mutex, RwLock};
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub enum LockTag {
     Relation {
-        dboid: Oid,
-        tableoid: Oid,
+        dboid: Option<Oid>,
+        reloid: Oid,
     },
     Object {
         dboid: Oid,
@@ -29,7 +30,7 @@ pub enum LockTag {
 }
 
 type LockMask = u32;
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Eq, Hash, PartialEq, Debug)]
 #[repr(u32)]
 pub enum LockMode {
     NoLock = 0,
@@ -242,6 +243,8 @@ pub trait SessionExt {
     // LockDatabaseObject
     fn lock_dbobj(&mut self, cls: Oid, obj: Oid, mode: LockMode);
     fn lock_ns(&mut self, ns: Oid, mode: LockMode);
+    fn lock_rel(&mut self, rel: Oid, mode: LockMode);
+    fn unlock_rel(&mut self, rel: Oid, mode: LockMode);
 }
 
 fn local_acquire(
@@ -343,6 +346,18 @@ fn total_n(locallocks: &[LocalLock<'_>; LOCKMODESNUM]) -> u64 {
     return retn;
 }
 
+// SetLocktagRelationOid
+fn get_rel_locktag(sess: &SessionState, reloid: Oid) -> LockTag {
+    return LockTag::Relation {
+        dboid: if is_shared_rel(reloid) {
+            None
+        } else {
+            Some(sess.reqdb)
+        },
+        reloid,
+    };
+}
+
 impl SessionExt for SessionState {
     fn lock_acquire(&mut self, tag: &LockTag, mode: LockMode) {
         let (locallocks, localcnts) = if let Some(locallocks) = self.lmgrs.lm.get_mut(&tag) {
@@ -430,5 +445,15 @@ impl SessionExt for SessionState {
 
     fn lock_ns(&mut self, ns: Oid, mode: LockMode) {
         self.lock_dbobj(NSRELID, ns, mode);
+    }
+
+    fn lock_rel(&mut self, rel: Oid, mode: LockMode) {
+        let locktag = get_rel_locktag(self, rel);
+        self.lock_acquire(&locktag, mode);
+    }
+
+    fn unlock_rel(&mut self, rel: Oid, mode: LockMode) {
+        let locktag = get_rel_locktag(self, rel);
+        self.lock_release(&locktag, mode);
     }
 }

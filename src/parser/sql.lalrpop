@@ -13,6 +13,7 @@
 
 use super::syn;
 use std::str::FromStr;
+use crate::access::lmgr::LockMode;
 
 grammar;
 
@@ -31,6 +32,7 @@ stmt: syn::Stmt<'input> = {
     <s:SelectStmt> => syn::Stmt::Select(s),
     <s:TranStmt> => syn::Stmt::Tran(s),
     <s:CreateTableStmt> => syn::Stmt::CreateTable(s),
+    <s:LockStmt> => syn::Stmt::Lock(s),
     // EMPTY
     => syn::Stmt::Empty,
 }
@@ -126,11 +128,13 @@ ColId: syn::StrVal<'input> = {
 match {
     // keywords
     r"[wW][iI][tT][hH]" => WITH,
+    r"[mM][oO][dD][eE]" => MODE,
     r"[sS][eE][lL][eE][cC][tT]" => SELECT,
     r"[aA][sS]" => AS,
     r"[cC][rR][eE][aA][tT][eE]" => CREATE,
     r"[tT][yY][pP][eE]" => TYPE_P,
     r"[tT][oO]" => TO,
+    r"[iI][nN]" => IN_P,
     r"[sS][eE][tT]" => SET,
     r"[sS][hH][oO][wW]" => SHOW,
     r"[tT][rR][uU][eE]" => TRUE_P,
@@ -142,6 +146,12 @@ match {
     r"[sS][mM][aA][lL][lL][iI][nN][tT]" => SMALLINT,
     r"[tT][aA][bB][lL][eE]" => TABLE,
     r"[vV][aA][rR][cC][hH][aA][rR]" => VARCHAR,
+    r"[lL][oO][cC][kK]" => LOCK_P,
+    r"[aA][cC][cC][eE][sS][sS]" => ACCESS,
+    r"[rR][oO][wW]" => ROW,
+    r"[sS][hH][aA][rR][eE]" => SHARE,
+    r"[eE][xX][cC][lL][uU][sS][iI][vV][eE]" => EXCLUSIVE,
+    r"[uU][pP][dD][aA][tT][eE]" => UPDATE,
 } else {
     r"[a-z_][a-z0-9_]*" => LOWERCASE_ID,
 } else {
@@ -414,4 +424,52 @@ CreateTableStmt: syn::CreateTableStmt<'input> = {
         table_elts: tl,
         opts: w,
     },
+}
+
+opt_table: &'input str = {
+    <s: TABLE> => {
+        s
+    },
+    => {
+        ""
+    }
+}
+
+LockStmt: syn::LockStmt<'input> = {
+    LOCK_P opt_table <rs:relation_expr_list> <m: opt_lock> => syn::LockStmt {
+        rels: rs,
+        mode: m,
+    }
+}
+
+relation_expr_list: Vec<syn::RangeVar<'input>> = {
+    <s:relation_expr> => {
+        vec![s]
+    },
+    <mut m: relation_expr_list> "," <s:relation_expr> => {
+        m.push(s);
+        m
+    }
+}
+
+relation_expr: syn::RangeVar<'input> = {
+    <q:qualified_name> => {
+        q
+    }
+}
+
+lock_type: LockMode = {
+    ACCESS SHARE => LockMode::AccessShare,
+    ROW SHARE => LockMode::RowShare,
+    ROW EXCLUSIVE => LockMode::RowExclusive,
+    SHARE UPDATE EXCLUSIVE => LockMode::ShareUpdateExclusive,
+    SHARE => LockMode::Share,
+    SHARE ROW EXCLUSIVE => LockMode::ShareRowExclusive,
+    EXCLUSIVE => LockMode::Exclusive,
+    ACCESS EXCLUSIVE => LockMode::AccessExclusive,
+}
+
+opt_lock: LockMode = {
+    IN_P <s: lock_type> MODE => s,
+    => LockMode::AccessExclusive,
 }
