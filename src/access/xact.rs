@@ -12,6 +12,7 @@ use super::clog::{WorkerExt as clog_worker_ext, XidStatus};
 use super::redo::RedoState;
 use super::wal::{self, Lsn, RecordHdr, Rmgr, RmgrId, XlogInfo};
 use crate::access::lmgr::SessionExt as LMGRSessionExt;
+use crate::kbbail;
 use crate::protocol::XactStatus;
 use crate::utils::{dec_xid, inc_xid, KBSystemTime, SessionState, Xid};
 use crate::Oid;
@@ -450,6 +451,12 @@ fn log_nextoid(sess: &mut SessionState, nextoid: u32) {
     return;
 }
 
+// IsTransactionBlock
+fn is_transblock(sess: &SessionState) -> bool {
+    let bs = itctx(sess).block_state;
+    return !(bs == TBlockState::Default || bs == TBlockState::Started);
+}
+
 pub trait SessionExt {
     // StartTransactionCommand
     fn start_tran_cmd(&mut self) -> anyhow::Result<()>;
@@ -475,14 +482,16 @@ pub trait SessionExt {
     ) -> Option<Lsn>;
     fn xact_status(&self) -> XactStatus;
     fn new_oid(&mut self) -> Oid;
+    // PreventInTransactionBlock
+    fn prevent_in_transblock(&self, stmt: &str) -> anyhow::Result<()>;
 }
 
 impl SessionExt for SessionState {
     fn start_tran_cmd(&mut self) -> anyhow::Result<()> {
-        match self.xact.tranctx.block_state {
+        match tctx(self).block_state {
             TBlockState::Default => {
                 start_tran(self)?;
-                self.xact.tranctx.block_state = TBlockState::Started;
+                tctx(self).block_state = TBlockState::Started;
             }
             TBlockState::Inprogress | TBlockState::Abort => {}
             TBlockState::Begin
@@ -492,43 +501,43 @@ impl SessionExt for SessionState {
             | TBlockState::AbortPending => {
                 bail!(
                     "start_tran_cmd: unexpected state={:?}",
-                    self.xact.tranctx.block_state
+                    tctx(self).block_state
                 );
             }
         }
         return Ok(());
     }
     fn commit_tran_cmd(&mut self) -> anyhow::Result<()> {
-        match self.xact.tranctx.block_state {
+        match tctx(self).block_state {
             TBlockState::Default => {
                 self.dead = true;
                 bail!(
                     "commit_tran_cmd: unexpected state={:?}",
-                    self.xact.tranctx.block_state
+                    tctx(self).block_state
                 );
             }
             TBlockState::Started | TBlockState::End => {
                 commit_tran(self)?;
-                self.xact.tranctx.block_state = TBlockState::Default;
+                tctx(self).block_state = TBlockState::Default;
             }
             TBlockState::Begin => {
-                self.xact.tranctx.block_state = TBlockState::Inprogress;
+                tctx(self).block_state = TBlockState::Inprogress;
             }
             TBlockState::Inprogress | TBlockState::Abort => {}
             TBlockState::AbortEnd => {
                 cleanup_tran(self)?;
-                self.xact.tranctx.block_state = TBlockState::Default;
+                tctx(self).block_state = TBlockState::Default;
             }
             TBlockState::AbortPending => {
                 abort_tran(self)?;
                 cleanup_tran(self)?;
-                self.xact.tranctx.block_state = TBlockState::Default;
+                tctx(self).block_state = TBlockState::Default;
             }
         }
         return Ok(());
     }
     fn abort_cur_tran(&mut self) -> anyhow::Result<()> {
-        match self.xact.tranctx.block_state {
+        match tctx(self).block_state {
             TBlockState::Default => {
                 if self.xact.tranctx.state != TranState::Default {
                     if self.xact.tranctx.state == TranState::Start {
@@ -544,24 +553,24 @@ impl SessionExt for SessionState {
             | TBlockState::AbortPending => {
                 abort_tran(self)?;
                 cleanup_tran(self)?;
-                self.xact.tranctx.block_state = TBlockState::Default;
+                tctx(self).block_state = TBlockState::Default;
             }
             TBlockState::Inprogress => {
                 abort_tran(self)?;
-                self.xact.tranctx.block_state = TBlockState::Abort;
+                tctx(self).block_state = TBlockState::Abort;
             }
             TBlockState::Abort => {}
             TBlockState::AbortEnd => {
                 cleanup_tran(self)?;
-                self.xact.tranctx.block_state = TBlockState::Default;
+                tctx(self).block_state = TBlockState::Default;
             }
         }
         return Ok(());
     }
     fn begin_tran_block(&mut self) -> anyhow::Result<()> {
-        match self.xact.tranctx.block_state {
+        match tctx(self).block_state {
             TBlockState::Started => {
-                self.xact.tranctx.block_state = TBlockState::Begin;
+                tctx(self).block_state = TBlockState::Begin;
             }
             TBlockState::Inprogress | TBlockState::Abort => {
                 log::warn!("there is already a transaction in progress");
@@ -574,7 +583,7 @@ impl SessionExt for SessionState {
                 self.dead = true;
                 bail!(
                     "begin_tran_block: unexpected state={:?}",
-                    self.xact.tranctx.block_state
+                    tctx(self).block_state
                 );
             }
         }
@@ -582,13 +591,13 @@ impl SessionExt for SessionState {
     }
     fn end_tran_block(&mut self) -> anyhow::Result<bool> {
         let mut ret = false;
-        match self.xact.tranctx.block_state {
+        match tctx(self).block_state {
             TBlockState::Inprogress => {
-                self.xact.tranctx.block_state = TBlockState::End;
+                tctx(self).block_state = TBlockState::End;
                 ret = true;
             }
             TBlockState::Abort => {
-                self.xact.tranctx.block_state = TBlockState::AbortEnd;
+                tctx(self).block_state = TBlockState::AbortEnd;
             }
             TBlockState::Started => {
                 ret = true;
@@ -601,19 +610,19 @@ impl SessionExt for SessionState {
                 self.dead = true;
                 bail!(
                     "end_tran_block: unexpected state={:?}",
-                    self.xact.tranctx.block_state
+                    tctx(self).block_state
                 );
             }
         }
         return Ok(ret);
     }
     fn user_abort_tran_block(&mut self) -> anyhow::Result<()> {
-        match self.xact.tranctx.block_state {
+        match tctx(self).block_state {
             TBlockState::Inprogress | TBlockState::Started => {
-                self.xact.tranctx.block_state = TBlockState::AbortPending;
+                tctx(self).block_state = TBlockState::AbortPending;
             }
             TBlockState::Abort => {
-                self.xact.tranctx.block_state = TBlockState::AbortEnd;
+                tctx(self).block_state = TBlockState::AbortEnd;
             }
             TBlockState::Default
             | TBlockState::Begin
@@ -623,14 +632,14 @@ impl SessionExt for SessionState {
                 self.dead = true;
                 bail!(
                     "user_abort_tran_block: unexpected state={:?}",
-                    self.xact.tranctx.block_state
+                    tctx(self).block_state
                 );
             }
         }
         return Ok(());
     }
     fn is_aborted(&self) -> bool {
-        self.xact.tranctx.block_state == TBlockState::Abort
+        itctx(self).block_state == TBlockState::Abort
     }
     fn insert_record(&mut self, id: RmgrId, info: u8, mut rec: Vec<u8>) -> Lsn {
         wal::finish_record(&mut rec, id, info, self.xact.tranctx.xid);
@@ -678,6 +687,17 @@ impl SessionExt for SessionState {
         }
         log_nextoid(self, nextoid);
         return Oid::new(curoid).unwrap();
+    }
+
+    fn prevent_in_transblock(&self, stmt: &str) -> anyhow::Result<()> {
+        if is_transblock(self) {
+            kbbail!(
+                ERRCODE_ACTIVE_SQL_TRANSACTION,
+                "{} cannot run inside a transaction block",
+                stmt
+            );
+        }
+        return Ok(());
     }
 }
 

@@ -14,8 +14,8 @@ use crate::catalog::namespace::SessionExt;
 use crate::catalog::qualname_get_type;
 use crate::parser::syn;
 use crate::utility::Response;
-use crate::utils::SessionState;
 use crate::utils::{persist, sync_dir};
+use crate::utils::{ExecSQLOnDrop, SessionState};
 use crate::xact::SessionExt as XACTSessionExt;
 use anyhow::ensure;
 use std::fs;
@@ -56,22 +56,24 @@ pub fn create_table(
     stmt: &syn::CreateTableStmt,
     state: &mut SessionState,
 ) -> anyhow::Result<Response> {
+    state.prevent_in_transblock("CREATE TABLE")?;
+
     let nsoid = state.rv_get_create_ns(&stmt.relation)?;
     let tableoid = state.new_oid();
     let tupdesc = build_desc(state, &stmt.table_elts)?;
     let xid = state.get_xid()?;
 
-    let mut metastmts = Vec::<String>::new();
-    metastmts.push("begin".to_string());
+    state.metaconn.execute("begin")?;
+    let _rollback = ExecSQLOnDrop::new(&state.metaconn, "rollback");
     let relname: &str = &stmt.relation.relname;
-    metastmts.push(format!(
+    state.metaconn.execute(format!(
         "insert into kb_class values({}, '{}', {}, false, 114, {}, {})",
         tableoid,
         relname,
         nsoid,
         tupdesc.desc.len(),
         xid
-    ));
+    ))?;
     for attidx in 0..tupdesc.desc.len() {
         let attnum = attidx + 1;
         let typdesc = &tupdesc.desc[attidx];
@@ -80,12 +82,8 @@ pub fn create_table(
             "insert into kb_attribute values({}, '{}', {}, {}, {}, {}, {}, 0, 0)",
             tableoid, attname, typdesc.id, typdesc.len, typdesc.align, attnum, typdesc.mode
         );
-        metastmts.push(sql);
+        state.metaconn.execute(sql)?;
     }
-    metastmts.push("commit".to_string());
-    let metastmt = metastmts.join(";");
-    log::debug!("create_table: metastmt: {}", &metastmt);
-    state.metaconn.execute(metastmt)?;
 
     fs::create_dir(format!("base/{}/{}", state.reqdb, tableoid))?;
     sync_dir(format!("base/{}", state.reqdb))?;
@@ -93,6 +91,8 @@ pub fn create_table(
         sv::get_minafest_path(state.reqdb, tableoid),
         &sv::INIT_MANIFEST_DAT,
     )?;
+    state.metaconn.execute("commit")?;
+    std::mem::forget(_rollback);
 
     return Ok(Response {
         resp: None,

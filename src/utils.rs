@@ -154,6 +154,29 @@ impl SessionState {
     }
 }
 
+pub struct ExecSQLOnDrop<'a, 'b> {
+    conn: &'a sqlite::Connection,
+    sql: &'b str,
+}
+
+impl<'a, 'b> ExecSQLOnDrop<'a, 'b> {
+    pub fn new(conn: &'a sqlite::Connection, sql: &'b str) -> ExecSQLOnDrop<'a, 'b> {
+        Self { conn, sql }
+    }
+}
+
+impl<'a, 'b> Drop for ExecSQLOnDrop<'a, 'b> {
+    fn drop(&mut self) {
+        if let Err(err) = self.conn.execute(self.sql) {
+            log::warn!(
+                "ExecSQLOnDrop: failed to execute sql: sql={} err={}",
+                self.sql,
+                err
+            );
+        }
+    }
+}
+
 pub type AttrNumber = NonZeroU16;
 pub type Xid = std::num::NonZeroU64;
 
