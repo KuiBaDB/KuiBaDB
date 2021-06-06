@@ -61,11 +61,16 @@
 
 -   [x] Add lock manager
 
--   [x] Add CREATE TABLE
+-   [x] Add CREATE TABLE, LOCK TABLE
 
     ```
     kuiba=# create table t( i int, j int );
     CREATE TABLE
+
+    kuiba=# begin;
+    BEGIN
+    kuiba=*# lock table t1 in access exclusive mode;
+    LOCK TABLE
     ```
 
 -   [ ] Add [columnar storage](https://blog.hidva.com/2021/04/25/kuiba-column-storage/).
