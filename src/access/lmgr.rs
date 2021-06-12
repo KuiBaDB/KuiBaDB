@@ -276,9 +276,6 @@ fn local_acquire(
 
 fn check_conflict(lock: &Lock, localcnts: &[u32; LOCKMODESNUM], mode: LockMode) -> bool {
     let confmodes = conflict_modes(mode);
-    if (confmodes & lock.wait) != 0 {
-        return true;
-    }
     if (confmodes & lock.grant) == 0 {
         return false;
     }
@@ -377,6 +374,7 @@ impl SessionExt for SessionState {
                     lock.grant(mode);
                     break;
                 } else {
+                    lock.wait |= lockbit_on(mode);
                     lock = lockstate.cv.wait(lock).unwrap();
                 }
             }
