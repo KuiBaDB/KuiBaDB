@@ -9,10 +9,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::datumblock::{DatumBlock, DatumBlockSingle};
+use crate::datums::Datums;
+use crate::kbanyhow;
+use crate::utils::adt;
 use crate::utils::WorkerState;
 use crate::Oid;
-use crate::{kbanyhow, kbbail};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -24,132 +25,20 @@ pub struct FmgrInfo {
 // PGFunction
 pub type KBFunction = fn(
     flinfo: &FmgrInfo,
-    args: &[Rc<DatumBlock>],
+    ret: &mut Rc<Datums>,
+    args: &[Rc<Datums>],
     state: &WorkerState,
-) -> anyhow::Result<Rc<DatumBlock>>;
-
-// TODO: remove unwrap()!!!
-fn get_i32(val: &DatumBlockSingle) -> i32 {
-    val.to_i32().unwrap()
-}
-
-pub fn get_single_bytes(val: &DatumBlock) -> &[u8] {
-    match val {
-        DatumBlock::Single(s) => s.as_bytes().unwrap(),
-    }
-}
-
-fn signle_bytes(val: &[u8]) -> anyhow::Result<Rc<DatumBlock>> {
-    Ok(Rc::new(DatumBlock::Single(DatumBlockSingle::new_bytes(
-        val,
-    ))))
-}
-
-fn single_i32(val: i32) -> anyhow::Result<Rc<DatumBlock>> {
-    Ok(Rc::new(DatumBlock::Single(DatumBlockSingle::from_i32(val))))
-}
-
-fn int4out(
-    _flinfo: &FmgrInfo,
-    args: &[Rc<DatumBlock>],
-    _state: &WorkerState,
-) -> anyhow::Result<Rc<DatumBlock>> {
-    match &(*args[0]) {
-        DatumBlock::Single(s) => signle_bytes(get_i32(s).to_string().as_bytes()),
-    }
-}
-
-fn i32_2args(args: &[Rc<DatumBlock>]) -> (i32, i32) {
-    (
-        match &(*args[0]) {
-            DatumBlock::Single(s) => get_i32(s),
-        },
-        match &(*args[1]) {
-            DatumBlock::Single(s) => get_i32(s),
-        },
-    )
-}
-
-fn int4pl(
-    _flinfo: &FmgrInfo,
-    args: &[Rc<DatumBlock>],
-    _state: &WorkerState,
-) -> anyhow::Result<Rc<DatumBlock>> {
-    let (l, r) = i32_2args(args);
-    let (r, overflow) = l.overflowing_add(r);
-    if overflow {
-        Err(kbanyhow!(
-            ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE,
-            "integer out of range"
-        ))
-    } else {
-        single_i32(r)
-    }
-}
-
-fn int4mi(
-    _flinfo: &FmgrInfo,
-    args: &[Rc<DatumBlock>],
-    _state: &WorkerState,
-) -> anyhow::Result<Rc<DatumBlock>> {
-    let (l, r) = i32_2args(args);
-    let (r, overflow) = l.overflowing_sub(r);
-    if overflow {
-        Err(kbanyhow!(
-            ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE,
-            "integer out of range"
-        ))
-    } else {
-        single_i32(r)
-    }
-}
-
-fn int4mul(
-    _flinfo: &FmgrInfo,
-    args: &[Rc<DatumBlock>],
-    _state: &WorkerState,
-) -> anyhow::Result<Rc<DatumBlock>> {
-    let (l, r) = i32_2args(args);
-    let (r, overflow) = l.overflowing_mul(r);
-    if overflow {
-        Err(kbanyhow!(
-            ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE,
-            "integer out of range"
-        ))
-    } else {
-        single_i32(r)
-    }
-}
-
-fn int4div(
-    _flinfo: &FmgrInfo,
-    args: &[Rc<DatumBlock>],
-    _state: &WorkerState,
-) -> anyhow::Result<Rc<DatumBlock>> {
-    let (l, r) = i32_2args(args);
-    if r == 0 {
-        kbbail!(ERRCODE_DIVISION_BY_ZERO, "division by zero");
-    }
-    let (r, overflow) = l.overflowing_div(r);
-    if overflow {
-        Err(kbanyhow!(
-            ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE,
-            "integer out of range"
-        ))
-    } else {
-        single_i32(r)
-    }
-}
+) -> anyhow::Result<()>;
 
 pub type FmgrBuiltinsMap = HashMap<Oid, KBFunction>;
 pub fn get_fmgr_builtins() -> FmgrBuiltinsMap {
     let mut m = FmgrBuiltinsMap::new();
     // TODO: MAGIC NUMBER!!!
-    m.insert(Oid::new(43).unwrap(), int4out);
-    m.insert(Oid::new(177).unwrap(), int4pl);
-    m.insert(Oid::new(181).unwrap(), int4mi);
-    m.insert(Oid::new(154).unwrap(), int4div);
-    m.insert(Oid::new(141).unwrap(), int4mul);
+    m.insert(Oid::new(43).unwrap(), adt::int4out);
+    m.insert(Oid::new(177).unwrap(), adt::int4pl);
+    m.insert(Oid::new(181).unwrap(), adt::int4mi);
+    m.insert(Oid::new(154).unwrap(), adt::int4div);
+    m.insert(Oid::new(141).unwrap(), adt::int4mul);
     m
 }
 

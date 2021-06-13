@@ -10,11 +10,11 @@
 // limitations under the License.
 
 use crate::catalog;
-use crate::datumblock::DatumBlock;
+use crate::datums::Datums;
 use crate::executor::DestReceiver;
 use crate::parser::sem;
-use crate::utils::fmgr::{get_fn_addr, get_single_bytes, FmgrInfo};
-use crate::utils::{SessionState, WorkerState};
+use crate::utils::fmgr::{get_fn_addr, FmgrInfo};
+use crate::utils::{SessionState, Worker};
 use crate::{protocol, Oid};
 use std::debug_assert;
 use std::net::TcpStream;
@@ -32,8 +32,8 @@ pub mod xact;
 pub struct DestRemote<'sess> {
     session: &'sess SessionState,
     stream: &'sess mut TcpStream,
-    state: WorkerState,
     typout: Vec<FmgrInfo>,
+    outstr: Vec<Rc<Datums>>,
     pub processed: u64,
 }
 
@@ -42,19 +42,19 @@ impl DestRemote<'_> {
         session: &'sess SessionState,
         stream: &'sess mut TcpStream,
     ) -> DestRemote<'sess> {
-        let state = WorkerState::new(session);
         DestRemote {
             session,
             stream,
-            state,
             typout: Vec::new(),
             processed: 0,
+            outstr: Vec::new(),
         }
     }
 }
 
 impl DestReceiver for DestRemote<'_> {
-    fn startup(&mut self, tlist: &Vec<sem::TargetEntry<'_>>) -> anyhow::Result<()> {
+    fn startup(&mut self, tlist: &Vec<sem::TargetEntry>) -> anyhow::Result<()> {
+        self.outstr.resize_with(tlist.len(), Default::default);
         self.typout.clear();
         let mut fields = Vec::new();
         for target in tlist {
@@ -64,7 +64,7 @@ impl DestReceiver for DestRemote<'_> {
                 fn_addr: get_fn_addr(typoutproc, self.session.fmgr_builtins)?,
                 fn_oid: typoutproc,
             });
-            let fieldname = match target.resname {
+            let fieldname = match &target.resname {
                 None => "", // TupleDescInitEntry() set name to empty if target.resname is None.
                 Some(v) => v,
             };
@@ -79,35 +79,60 @@ impl DestReceiver for DestRemote<'_> {
         Ok(())
     }
 
-    fn receive(&mut self, tuples: &Vec<Rc<DatumBlock>>) -> anyhow::Result<()> {
+    fn receive(
+        &mut self,
+        tuples: &[Rc<Datums>],
+        orownum: u32,
+        worker: &Worker,
+    ) -> anyhow::Result<()> {
         debug_assert!(tuples.len() == self.typout.len());
-        self.processed += 1;
-        let mut output = Vec::with_capacity(tuples.len());
-        // How to traverse two Vec at the same time?
-        for idx in 0..tuples.len() {
-            let ostr =
-                (self.typout[idx].fn_addr)(&self.typout[idx], &tuples[idx..idx + 1], &self.state)?;
-            output.push(ostr);
+        let rownum = orownum as u64;
+        self.processed += rownum;
+        for (idx, _) in tuples.iter().enumerate() {
+            let fnaddr = self.typout[idx].fn_addr;
+            fnaddr(
+                &self.typout[idx],
+                &mut self.outstr[idx],
+                &tuples[idx..idx + 1],
+                &worker.state,
+            )?;
         }
-        let mut ostr = Vec::with_capacity(output.len());
-        for o in &output {
-            ostr.push(Some(get_single_bytes(o)));
+
+        let mut ostr = Vec::with_capacity(tuples.len());
+        for idx in 0..rownum {
+            ostr.clear();
+            for col in &self.outstr {
+                let colstr = col.try_get_varchar_at(idx as isize).map(|v| v.as_bytes());
+                ostr.push(colstr);
+            }
+            // TODO: Cache the message in memory and flush the message when necessary.
+            protocol::write_message(
+                self.stream,
+                &protocol::DataRow {
+                    data: ostr.as_slice(),
+                },
+            );
         }
-        protocol::write_message(
-            self.stream,
-            &protocol::DataRow {
-                data: ostr.as_slice(),
-            },
-        );
-        Ok(())
+        return Ok(());
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct TypeDesc {
     pub id: Oid,
     pub len: i16,
     pub align: u8,
     pub mode: i32,
+}
+
+impl TypeDesc {
+    pub fn hash(&self, md5h: &mut md5::Context) {
+        md5h.consume(self.id.get().to_ne_bytes());
+        md5h.consume(self.len.to_ne_bytes());
+        md5h.consume(self.align.to_ne_bytes());
+        md5h.consume(self.mode.to_ne_bytes());
+        return;
+    }
 }
 
 pub struct TupleDesc {

@@ -11,6 +11,7 @@
 
 **KuiBaDB** is only developed in my free time, so the progress could be very slow.
 
+-   [x] Add GlobalState, SessionState, WorkState. See [KuiBaDB: State](https://blog.hidva.com/2021/05/31/kuibadb-state/) for more details.
 -   [x] Add guc
 -   [x] Support `select expr1, expr2`:
 
@@ -71,6 +72,16 @@
     BEGIN
     kuiba=*# lock table t1 in access exclusive mode;
     LOCK TABLE
+    ```
+
+-   [x] Refactoring Expression module, supporting expression result reuse, `1 + 3` will only be calculated once, and memory reuse, See [KuiBaDB: Expression](https://blog.hidva.com/2021/06/12/kuiba-expr/) for more details.
+
+    ```
+    kuiba=# select (1+3) + (1+3), 1 + 3;
+     ?column? | ?column?
+    ----------+----------
+            8 |        4
+    (1 row)
     ```
 
 -   [ ] Add [columnar storage](https://blog.hidva.com/2021/04/25/kuiba-column-storage/).

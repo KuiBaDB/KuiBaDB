@@ -32,6 +32,13 @@ impl StrVal<'_> {
             StrVal::Dyn(val) => val.as_str(),
         }
     }
+
+    pub fn to_string(&self) -> String {
+        match self {
+            &StrVal::InPlace(val) => val.to_string(),
+            StrVal::Dyn(val) => val.clone(),
+        }
+    }
 }
 
 #[derive(Debug)]

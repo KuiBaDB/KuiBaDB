@@ -25,6 +25,8 @@ crc32c = "0.6"
 memoffset = "0.6"
 tempfile = "3.2"
 chrono = "0.4"
+bit-vec = "0.6"
+md5 = "0.7"
 
 
 [build-dependencies]

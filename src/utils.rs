@@ -29,6 +29,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::NamedTempFile;
 use thread_local::ThreadLocal;
 
+pub mod adt;
 pub mod err;
 pub mod fmgr;
 pub mod marc;

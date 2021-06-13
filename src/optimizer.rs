@@ -15,37 +15,46 @@ use anyhow;
 
 // 'sem is the lifetime of stuff returned by kb_analyze().
 
-pub struct Result<'syn> {
-    pub resconstantqual: Option<sem::Expr>,
-    pub lefttree: Option<Box<Plan<'syn>>>,
-    pub qual: Vec<sem::Expr>,
-    pub tlist: Vec<sem::TargetEntry<'syn>>,
+// Common should always be placed first so that Plan::common can erase the match expr.
+pub struct PlanCommon {
+    pub tlist: Vec<sem::TargetEntry>,
 }
 
-pub enum Plan<'syn> {
-    Result(Result<'syn>),
+pub struct Result {
+    pub plan: PlanCommon,
+    pub resconstantqual: Option<sem::Expr>,
+    pub lefttree: Option<Box<Plan>>,
+    pub qual: Vec<sem::Expr>,
+}
+
+pub enum Plan {
+    Result(Result),
 }
 
 // TODO: Try to simplify it, remove the match.
-impl Plan<'_> {
-    pub fn tlist(&self) -> &Vec<sem::TargetEntry<'_>> {
+impl Plan {
+    pub fn common(&self) -> &PlanCommon {
         match self {
-            Plan::Result(r) => &r.tlist,
+            Plan::Result(r) => &r.plan,
         }
+    }
+
+    pub fn tlist(&self) -> &Vec<sem::TargetEntry> {
+        return &self.common().tlist;
     }
 }
 
-pub struct PlannedStmt<'syn> {
-    pub plan_tree: Plan<'syn>,
+// PlannedStmt may be cached by the plan cache, so it should have no lifetime.
+pub struct PlannedStmt {
+    pub plan_tree: Plan,
 }
 
-pub fn planner<'syn>(
-    _state: &mut SessionState,
-    parse: &sem::Query<'syn>,
-) -> anyhow::Result<PlannedStmt<'syn>> {
+pub fn planner(_state: &mut SessionState, parse: &sem::Query) -> anyhow::Result<PlannedStmt> {
     Ok(PlannedStmt {
         plan_tree: Plan::Result(Result {
-            tlist: parse.tlist.clone(),
+            plan: PlanCommon {
+                tlist: parse.tlist.clone(),
+            },
             qual: Vec::new(),
             lefttree: None,
             resconstantqual: None,

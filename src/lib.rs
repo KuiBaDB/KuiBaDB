@@ -33,7 +33,7 @@ pub mod access;
 pub mod catalog;
 pub mod commands;
 pub mod common;
-pub mod datumblock;
+pub mod datums;
 pub mod executor;
 pub mod guc;
 pub mod optimizer;

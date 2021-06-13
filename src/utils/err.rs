@@ -63,3 +63,17 @@ macro_rules! kbbail {
         return Err($crate::kbanyhow!($code, $fmt, $($arg)*))
     };
 }
+
+#[macro_export]
+macro_rules! kbensure {
+    ($cond:expr, $code:ident, $msg:literal $(,)?) => {
+        if !$cond {
+            return Err($crate::kbanyhow!($code, $msg))
+        }
+    };
+    ($cond:expr, $code:ident, $fmt:expr, $($arg:tt)*) => {
+        if !$cond {
+            return Err($crate::kbanyhow!($code, $fmt, $($arg)*))
+        }
+    };
+}
