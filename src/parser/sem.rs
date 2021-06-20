@@ -45,7 +45,7 @@ impl Const {
         let (constv, consttypeoid, constlen, constalign) = match &input.val {
             syn::Value::Num(v) => match v {
                 &syn::NumVal::Int(i) => (
-                    Datums::new_single_i32(i),
+                    Datums::new_single_fixedlen(i),
                     INT4OID,
                     size_of::<i32>() as i16,
                     align_of::<i32>(),
@@ -53,7 +53,7 @@ impl Const {
                 &syn::NumVal::Float { neg, v } => {
                     if let Ok(i) = v.parse::<i64>() {
                         (
-                            Datums::new_single_i64(if neg { -i } else { i }),
+                            Datums::new_single_fixedlen(if neg { -i } else { i }),
                             INT8OID,
                             size_of::<i64>() as i16,
                             align_of::<i64>(),
@@ -61,7 +61,7 @@ impl Const {
                     } else {
                         let v: f64 = v.parse()?;
                         (
-                            Datums::new_single_f64(if neg { -v } else { v }),
+                            Datums::new_single_fixedlen(if neg { -v } else { v }),
                             FLOAT8OID,
                             size_of::<f64>() as i16,
                             align_of::<f64>(),
@@ -94,13 +94,13 @@ impl Const {
         self.typ.hash(&mut md5h);
         match self.typ.id {
             INT4OID => {
-                md5h.consume(self.v.get_single_i32().to_ne_bytes());
+                md5h.consume(self.v.get_single_fixedlen::<i32>().to_ne_bytes());
             }
             INT8OID => {
-                md5h.consume(self.v.get_single_i64().to_ne_bytes());
+                md5h.consume(self.v.get_single_fixedlen::<i64>().to_ne_bytes());
             }
             FLOAT8OID => {
-                md5h.consume(self.v.get_single_f64().to_ne_bytes());
+                md5h.consume(self.v.get_single_fixedlen::<f64>().to_ne_bytes());
             }
             VARCHAROID => {
                 md5h.consume(self.v.get_single_varchar().as_bytes());

@@ -9,7 +9,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::utils::{SessionState, Worker, WorkerState};
+use crate::utils::SessionState;
 use crate::{GlobalState, TEST_SESSID};
 use std::env;
 
@@ -28,6 +28,8 @@ fn new_session_state(global_state: &GlobalState) -> SessionState {
     global_state.clone().internal_session(TEST_SESSID).unwrap()
 }
 
-fn new_worker() -> Worker {
-    Worker::new(WorkerState::new(&new_session_state(&GLOBAL_STATE)))
+fn new_session() -> SessionState {
+    let sess = new_session_state(&GLOBAL_STATE);
+    sess.init_thread_locals();
+    return sess;
 }

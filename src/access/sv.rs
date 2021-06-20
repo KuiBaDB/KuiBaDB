@@ -28,8 +28,8 @@ struct L0File {
 
 #[derive(Eq, Hash, Copy, Clone, Debug, PartialEq)]
 pub struct TableId {
-    db: Oid,
-    table: Oid,
+    pub db: Oid,
+    pub table: Oid,
 }
 
 pub struct SVDestoryCtx {
@@ -38,7 +38,15 @@ pub struct SVDestoryCtx {
 }
 
 fn get_datafile_path(dboid: Oid, table: Oid, fileid: FileId) -> String {
-    return format!("{}/{}/{}.d", dboid, table, fileid);
+    return format!("base/{}/{}/{}.d", dboid, table, fileid); // .data
+}
+
+pub fn get_mvccfile_path(dboid: Oid, table: Oid, fileid: FileId) -> String {
+    return format!("base/{}/{}/{}.M", dboid, table, fileid); // .mvcc
+}
+
+pub fn get_minafest_path(db: Oid, table: Oid) -> String {
+    format!("base/{}/{}/manifest", db, table)
 }
 
 impl Destory for L0File {
@@ -178,10 +186,6 @@ fn write_manifest(path: &str, sv: &SupVer) -> anyhow::Result<()> {
     cursor.write_u32::<LittleEndian>(crc)?;
 
     return persist(path, cursor.get_ref());
-}
-
-pub fn get_minafest_path(db: Oid, table: Oid) -> String {
-    format!("base/{}/{}/manifest", db, table)
 }
 
 impl sb::Value for SupVer {

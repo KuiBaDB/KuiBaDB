@@ -11,6 +11,7 @@
 
 // 'input lifetime is the lifetime of query inputted by the user
 use crate::access::lmgr::LockMode;
+use std::fmt::{self, Display, Formatter};
 
 #[derive(Debug)]
 pub enum StrVal<'input> {
@@ -41,6 +42,16 @@ impl StrVal<'_> {
     }
 }
 
+// Display is used in get_relopt().
+impl Display for StrVal<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
+        match self {
+            &StrVal::InPlace(v) => write!(f, "{}", v),
+            StrVal::Dyn(v) => write!(f, "{}", v),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum NumVal<'input> {
     Int(i32),
@@ -57,10 +68,35 @@ impl NumVal<'_> {
     }
 }
 
+// Display is used in get_relopt().
+impl Display for NumVal<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
+        match self {
+            &NumVal::Int(v) => write!(f, "{}", v),
+            &NumVal::Float { neg, v } => {
+                if neg {
+                    write!(f, "-{}", v)
+                } else {
+                    write!(f, "{}", v)
+                }
+            }
+        }
+    }
+}
 #[derive(Debug)]
 pub enum Value<'input> {
     Num(NumVal<'input>),
     Str(StrVal<'input>),
+}
+
+// Display is used in get_relopt().
+impl Display for Value<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
+        match self {
+            Value::Str(s) => write!(f, "{}", s),
+            Value::Num(s) => write!(f, "{}", s),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -131,7 +167,7 @@ mod syn_test {
 
 #[derive(Debug)]
 pub struct DefElemVal<'input> {
-    pub defnamespace: Option<StrVal<'input>>,
+    // pub defnamespace: Option<StrVal<'input>>,
     pub defname: StrVal<'input>,
     pub arg: Value<'input>,
 }
@@ -145,11 +181,7 @@ pub enum DefElem<'input> {
 }
 
 pub fn make_def_elem<'input>(defname: StrVal<'input>, arg: Value<'input>) -> DefElem<'input> {
-    DefElem::Unspec(DefElemVal {
-        defnamespace: None,
-        defname,
-        arg,
-    })
+    DefElem::Unspec(DefElemVal { defname, arg })
 }
 
 #[derive(Debug)]

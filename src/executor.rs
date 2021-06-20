@@ -14,7 +14,7 @@ use crate::optimizer;
 use crate::optimizer::PlannedStmt;
 use crate::parser::sem::{self, ExprHash};
 use crate::utils::fmgr::{get_fn_addr, FmgrInfo};
-use crate::utils::{SessionState, Worker, WorkerState};
+use crate::utils::{SessionState, WorkerState};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -24,7 +24,7 @@ pub trait DestReceiver {
         &mut self,
         tuples: &[Rc<Datums>],
         rownum: u32,
-        worker: &Worker,
+        worker: &WorkerState,
     ) -> anyhow::Result<()>;
 }
 
@@ -330,14 +330,13 @@ pub fn exec_select(
     dest: &mut dyn DestReceiver,
 ) -> anyhow::Result<()> {
     let state = WorkerState::new(session);
-    let worker = Worker::new(state);
-    let mut planstate = exec_init_plan(&stmt.plan_tree, &worker.state)?;
+    let mut planstate = exec_init_plan(&stmt.plan_tree, &state)?;
     dest.startup(stmt.plan_tree.tlist())?;
     loop {
         let (rows, rownumber) = planstate.exec()?;
         match rows {
             None => break,
-            Some(tuples) => dest.receive(tuples, rownumber, &worker)?,
+            Some(tuples) => dest.receive(tuples, rownumber, &state)?,
         }
     }
     Ok(())

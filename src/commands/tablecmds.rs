@@ -12,6 +12,7 @@ use crate::access::sv;
 use crate::access::{TupleDesc, TypeDesc};
 use crate::catalog::namespace::SessionExt;
 use crate::catalog::{qualname_get_type, FormType};
+use crate::guc;
 use crate::kbbail;
 use crate::parser::syn;
 use crate::utility::Response;
@@ -72,6 +73,29 @@ fn build_desc(
     return Ok(ts);
 }
 
+fn get_relopt(stmt: &syn::CreateTableStmt, state: &mut SessionState) -> String {
+    let mut ret: Vec<String> = vec![];
+    let mut meet_mvcc_blk_rows = false;
+    for defelem in &stmt.opts {
+        let (name, val) = match defelem {
+            syn::DefElem::Unspec(v) | syn::DefElem::Add(v) => (&v.defname, &v.arg),
+            _ => continue,
+        };
+        ret.push(format!("{}={}", name, val));
+        let name: &str = name;
+        if name == "mvcc_blk_rows" {
+            meet_mvcc_blk_rows = true;
+        }
+    }
+    if !meet_mvcc_blk_rows {
+        ret.push(format!(
+            "mvcc_blk_rows={}",
+            guc::get_int(&state.gucstate, guc::MvccBlkRows)
+        ));
+    }
+    return ret.join(",");
+}
+
 pub fn create_table(
     stmt: &syn::CreateTableStmt,
     state: &mut SessionState,
@@ -84,15 +108,17 @@ pub fn create_table(
     let xid = state.get_xid()?;
 
     state.metaconn.execute("begin")?;
+    let relopt = get_relopt(stmt, state);
     let _rollback = ExecSQLOnDrop::new(&state.metaconn, "rollback");
     let relname: &str = &stmt.relation.relname;
     state.metaconn.execute(format!(
-        "insert into kb_class values({}, '{}', {}, false, 114, {}, {})",
+        "insert into kb_class values({}, '{}', {}, false, 114, {}, {}, '{}')",
         tableoid,
         relname,
         nsoid,
         tupdesc.desc.len(),
-        xid
+        xid,
+        relopt,
     ))?;
     for attidx in 0..tupdesc.desc.len() {
         let attnum = attidx + 1;

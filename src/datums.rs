@@ -8,77 +8,13 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
+use crate::utils::{alloc, dealloc, doalloc, realloc};
 use static_assertions::const_assert;
-use std::alloc::Layout;
-use std::mem::{align_of, size_of};
+use std::mem::{align_of, size_of, transmute_copy};
 use std::ptr::copy_nonoverlapping as memcpy;
 use std::ptr::NonNull;
 use std::slice;
 use std::str::{self, from_utf8};
-
-fn valid_layout(size: usize, align: usize) -> bool {
-    // align is the typalign that has been checked at CRAETE TYPE.
-    debug_assert!(align.is_power_of_two());
-    size <= usize::MAX - (align - 1)
-}
-
-// Use std::alloc::Allocator instead.
-// Just like Vec and HashMap, out-of-memory is not considered here..
-fn doalloc(mut size: usize, align: usize) -> NonNull<u8> {
-    if size == 0 {
-        // GlobalAlloc: undefined behavior can result if the caller does not ensure
-        // that layout has non-zero size.
-        size = 2;
-    }
-    debug_assert!(Layout::from_size_align(size, align).is_ok());
-    let ret = unsafe { std::alloc::alloc(Layout::from_size_align_unchecked(size, align)) };
-    return NonNull::new(ret).expect("alloc failed");
-}
-
-fn alloc(size: usize, align: usize) -> NonNull<u8> {
-    assert!(
-        valid_layout(size, align),
-        "valid_layout failed: size: {}, align: {}",
-        size,
-        align
-    );
-    return doalloc(size, align);
-}
-
-fn dealloc(ptr: NonNull<u8>, mut size: usize, align: usize) {
-    if size == 0 {
-        size = 2;
-    }
-    debug_assert!(Layout::from_size_align(size, align).is_ok());
-    unsafe {
-        std::alloc::dealloc(ptr.as_ptr(), Layout::from_size_align_unchecked(size, align));
-    }
-}
-
-fn realloc(ptr: NonNull<u8>, align: usize, mut osize: usize, mut nsize: usize) -> NonNull<u8> {
-    if osize == 0 {
-        osize = 2;
-    }
-    if nsize == 0 {
-        nsize = 2;
-    }
-    assert!(
-        valid_layout(nsize, align),
-        "valid_layout failed: size: {}, align: {}",
-        nsize,
-        align
-    );
-    debug_assert!(Layout::from_size_align(osize, align).is_ok());
-    let ret = unsafe {
-        std::alloc::realloc(
-            ptr.as_ptr(),
-            Layout::from_size_align_unchecked(osize, align),
-            nsize,
-        )
-    };
-    return NonNull::new(ret).expect("realloc failed");
-}
 
 const FIXEDLEN_MAX_SIZE: usize = 32767; /* 2 ** 16 - 1 */
 // max size for Variable-length datatypes.
@@ -139,27 +75,16 @@ impl Datums {
         }
     }
 
-    pub fn new_single_i32(v: i32) -> Datums {
-        let mut d = Datums::new();
-        d.set_single_i32(v);
-        return d;
-    }
-
-    pub fn new_single_i64(v: i64) -> Datums {
-        let mut d = Datums::new();
-        d.set_single_i64(v);
-        return d;
-    }
-    pub fn new_single_f64(v: f64) -> Datums {
-        let mut d = Datums::new();
-        d.set_single_f64(v);
-        return d;
-    }
-
     pub fn new_single_varchar(v: &[u8]) -> Datums {
         debug_assert!(valid_varchar(v));
         let mut d = Datums::new();
         d.set_single_varchar(v);
+        return d;
+    }
+
+    pub fn new_single_fixedlen<T: Copy>(v: T) -> Datums {
+        let mut d = Datums::new();
+        d.set_single_fixedlen(v);
         return d;
     }
 
@@ -177,25 +102,38 @@ impl Datums {
         self.ndatum = SINGLE_NULL_MASK | SINGLE;
     }
 
-    pub fn set_single_i32(&mut self, v: i32) {
+    pub fn set_single_fixedlen<T: Copy>(&mut self, v: T) {
+        let size_t = size_of::<T>();
+        debug_assert!(size_t == 1 || size_t == 2 || size_t == 4 || size_t == 8);
         debug_assert!(self.blob.is_none());
         self.ndatum = SINGLE;
-        self.blob_cap = (v as u32) as usize;
+        self.blob_cap = unsafe {
+            match size_t {
+                1 => transmute_copy::<T, u8>(&v) as usize,
+                2 => transmute_copy::<T, u16>(&v) as usize,
+                4 => transmute_copy::<T, u32>(&v) as usize,
+                8 => transmute_copy::<T, u64>(&v) as usize,
+                _ => unreachable!("set_single_fixedlen: invalid size_of<T>: {}", size_t),
+            }
+        };
         return;
     }
 
-    pub fn set_single_i64(&mut self, v: i64) {
+    pub fn get_single_fixedlen<T: Copy>(&self) -> T {
+        let size_t = size_of::<T>();
+        debug_assert!(size_t == 1 || size_t == 2 || size_t == 4 || size_t == 8);
+        debug_assert!(self.is_single());
+        debug_assert!(!self.is_single_null());
         debug_assert!(self.blob.is_none());
-        self.ndatum = SINGLE;
-        self.blob_cap = v as u64 as usize;
-        return;
-    }
-
-    pub fn set_single_f64(&mut self, v: f64) {
-        debug_assert!(self.blob.is_none());
-        self.ndatum = SINGLE;
-        self.blob_cap = v.to_bits() as usize;
-        return;
+        unsafe {
+            match size_t {
+                1 => transmute_copy(&(self.blob_cap as u8)),
+                2 => transmute_copy(&(self.blob_cap as u16)),
+                4 => transmute_copy(&(self.blob_cap as u32)),
+                8 => transmute_copy(&(self.blob_cap as u64)),
+                _ => unreachable!("get_single_fixedlen: invalid size_of<T>: {}", size_t),
+            }
+        }
     }
 
     pub fn set_single_varchar(&mut self, v: &[u8]) {
@@ -209,24 +147,6 @@ impl Datums {
     pub fn is_single_null(&self) -> bool {
         debug_assert!(self.is_single());
         return (self.ndatum & SINGLE_NULL_MASK) != 0;
-    }
-
-    pub fn get_single_i32(&self) -> i32 {
-        debug_assert!(self.is_single());
-        debug_assert!(!self.is_single_null());
-        return self.blob_cap as u32 as i32;
-    }
-
-    pub fn get_single_i64(&self) -> i64 {
-        debug_assert!(self.is_single());
-        debug_assert!(!self.is_single_null());
-        return self.blob_cap as u64 as i64;
-    }
-
-    pub fn get_single_f64(&self) -> f64 {
-        debug_assert!(self.is_single());
-        debug_assert!(!self.is_single_null());
-        return f64::from_bits(self.blob_cap as u64);
     }
 
     pub fn get_single_varchar(&self) -> &str {
@@ -264,6 +184,13 @@ impl Datums {
 
     fn datums_at<T>(&self, idx: isize) -> *mut T {
         debug_assert!(!self.is_single());
+        debug_assert!(self.datums.is_some());
+        debug_assert!(isize::checked_mul(idx, size_of::<T>() as isize).is_some());
+        debug_assert!(idx >= 0);
+        debug_assert!((idx + 1) >= 0);
+        debug_assert!(isize::checked_mul(idx + 1, size_of::<T>() as isize).is_some());
+        debug_assert!(self.datums_cap >= (idx as usize + 1) * size_of::<T>());
+        debug_assert!(self.datums_align == align_of::<T>());
         // Use datums.unwrap_unchecked() instead
         return unsafe { self.datums.unwrap().cast::<T>().as_ptr().offset(idx) };
     }
@@ -286,7 +213,7 @@ impl Datums {
         return;
     }
 
-    pub fn set_i32_at(&mut self, idx: isize, val: i32) {
+    pub fn set_fixedlen_at<T: Copy>(&mut self, idx: isize, val: T) {
         debug_assert!(!self.is_single());
         debug_assert!(idx < self.ndatum as isize);
         debug_assert!(self.blob.is_none());
@@ -294,7 +221,7 @@ impl Datums {
         return;
     }
 
-    pub fn get_i32_at(&self, idx: isize) -> i32 {
+    pub fn get_fixedlen_at<T: Copy>(&self, idx: isize) -> T {
         debug_assert!(!self.is_single());
         debug_assert!(idx < self.ndatum as isize);
         debug_assert!(self.blob.is_none());
@@ -344,6 +271,12 @@ impl Datums {
         self.set_blob_at(blob_used as isize, val);
         self.set_datums_at(idx + 1, newcap);
         return;
+    }
+
+    pub fn set_empty_at(&mut self, idx: isize) {
+        // self.set_varchar_at(idx, "".as_bytes());
+        let blob_used: usize = self.get_datums_at(idx);
+        self.set_datums_at(idx + 1, blob_used);
     }
 
     pub fn get_varchar_at(&self, idx: isize) -> &str {
@@ -402,6 +335,8 @@ impl Datums {
     }
 
     pub fn set_null_at(&mut self, idx: isize) {
+        debug_assert!(!self.is_single());
+        debug_assert!(idx < self.ndatum as isize);
         let idx = idx as usize;
         if idx < self.null.len() {
             self.null.set(idx, true);
@@ -420,6 +355,50 @@ impl Datums {
 
     pub fn clonerc(v: &std::rc::Rc<Datums>) -> std::rc::Rc<Datums> {
         v.clone()
+    }
+
+    pub fn resize_bits<const BLEN: u8>(&mut self, ndatum: u32) {
+        debug_assert!(BLEN == 1 || BLEN == 2 || BLEN == 4);
+        debug_assert!(self.blob.is_none());
+        debug_assert!(ndatum <= NDATUM_MAX);
+        let datum_per_byte = (size_of::<u8>() as u8 * 8 / BLEN) as u32;
+        let cap = (ndatum + (datum_per_byte - 1)) / datum_per_byte;
+        self.reserve_datums(cap as usize, size_of::<u8>(), align_of::<u8>());
+        self.ndatum = ndatum;
+        return;
+    }
+
+    pub fn set_bits_at<const BLEN: u8>(&mut self, idx: isize, v: u8) {
+        debug_assert!(BLEN == 1 || BLEN == 2 || BLEN == 4);
+        debug_assert!(!self.is_single());
+        debug_assert!(idx < self.ndatum as isize);
+        debug_assert!(!self.datums.is_none());
+        debug_assert!(self.blob.is_none());
+        debug_assert_eq!(self.datums_align, align_of::<u8>());
+        let datum_per_byte = (size_of::<u8>() as u8 * 8 / BLEN) as isize;
+        let byte_idx = idx / datum_per_byte;
+        let bits_idx = (idx % datum_per_byte) as usize;
+        let bits_shift = bits_idx * BLEN as usize;
+        let mut bval: u8 = self.get_datums_at(byte_idx);
+        bval &= !((((1 << BLEN) - 1) as u8) << bits_shift);
+        bval |= v << bits_shift;
+        self.set_datums_at(byte_idx, bval);
+        return;
+    }
+
+    pub fn get_bits_at<const BLEN: u8>(&self, idx: isize) -> u8 {
+        debug_assert!(BLEN == 1 || BLEN == 2 || BLEN == 4);
+        debug_assert!(!self.is_single());
+        debug_assert!(idx < self.ndatum as isize);
+        debug_assert!(!self.datums.is_none());
+        debug_assert!(self.blob.is_none());
+        debug_assert_eq!(self.datums_align, align_of::<u8>());
+        let datum_per_byte = (size_of::<u8>() as u8 * 8 / BLEN) as isize;
+        let byte_idx = idx / datum_per_byte;
+        let bits_idx = (idx % datum_per_byte) as usize;
+        let bits_shift = bits_idx * BLEN as usize;
+        let bval: u8 = self.get_datums_at(byte_idx);
+        return (bval >> bits_shift) & (((1 << BLEN) - 1) as u8);
     }
 }
 
@@ -452,5 +431,59 @@ impl Clone for Datums {
             d.datums = Some(doalloc(self.datums_cap, self.datums_align));
         }
         return d;
+    }
+}
+
+#[cfg(test)]
+mod test {
+    #[test]
+    fn f() {
+        const BLEN: u8 = 2;
+        let mut d = super::Datums::new();
+        d.resize_bits::<BLEN>(16);
+        d.set_bits_at::<BLEN>(0, 1);
+        assert_eq!(d.get_bits_at::<BLEN>(0), 1);
+        d.set_bits_at::<BLEN>(1, 2);
+        assert_eq!(d.get_bits_at::<BLEN>(0), 1);
+        assert_eq!(d.get_bits_at::<BLEN>(1), 2);
+        d.set_bits_at::<BLEN>(2, 3);
+        assert_eq!(d.get_bits_at::<BLEN>(0), 1);
+        assert_eq!(d.get_bits_at::<BLEN>(1), 2);
+        assert_eq!(d.get_bits_at::<BLEN>(2), 3);
+        d.set_bits_at::<BLEN>(3, 0);
+        assert_eq!(d.get_bits_at::<BLEN>(0), 1);
+        assert_eq!(d.get_bits_at::<BLEN>(1), 2);
+        assert_eq!(d.get_bits_at::<BLEN>(2), 3);
+        assert_eq!(d.get_bits_at::<BLEN>(3), 0);
+        d.set_bits_at::<BLEN>(4, 2);
+        assert_eq!(d.get_bits_at::<BLEN>(0), 1);
+        assert_eq!(d.get_bits_at::<BLEN>(1), 2);
+        assert_eq!(d.get_bits_at::<BLEN>(2), 3);
+        assert_eq!(d.get_bits_at::<BLEN>(3), 0);
+        assert_eq!(d.get_bits_at::<BLEN>(4), 2);
+        d.set_bits_at::<BLEN>(5, 1);
+        assert_eq!(d.get_bits_at::<BLEN>(0), 1);
+        assert_eq!(d.get_bits_at::<BLEN>(1), 2);
+        assert_eq!(d.get_bits_at::<BLEN>(2), 3);
+        assert_eq!(d.get_bits_at::<BLEN>(3), 0);
+        assert_eq!(d.get_bits_at::<BLEN>(4), 2);
+        assert_eq!(d.get_bits_at::<BLEN>(5), 1);
+        d.set_bits_at::<BLEN>(6, 3);
+        assert_eq!(d.get_bits_at::<BLEN>(0), 1);
+        assert_eq!(d.get_bits_at::<BLEN>(1), 2);
+        assert_eq!(d.get_bits_at::<BLEN>(2), 3);
+        assert_eq!(d.get_bits_at::<BLEN>(3), 0);
+        assert_eq!(d.get_bits_at::<BLEN>(4), 2);
+        assert_eq!(d.get_bits_at::<BLEN>(5), 1);
+        assert_eq!(d.get_bits_at::<BLEN>(6), 3);
+        d.set_bits_at::<BLEN>(7, 0);
+        assert_eq!(d.get_bits_at::<BLEN>(0), 1);
+        assert_eq!(d.get_bits_at::<BLEN>(1), 2);
+        assert_eq!(d.get_bits_at::<BLEN>(2), 3);
+        assert_eq!(d.get_bits_at::<BLEN>(3), 0);
+        assert_eq!(d.get_bits_at::<BLEN>(4), 2);
+        assert_eq!(d.get_bits_at::<BLEN>(5), 1);
+        assert_eq!(d.get_bits_at::<BLEN>(6), 3);
+        assert_eq!(d.get_bits_at::<BLEN>(7), 0);
     }
 }

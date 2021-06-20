@@ -9,47 +9,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::clog::{VecXidStatus, WorkerExt, XidStatus, XACTS_PER_BYTE};
+use crate::clog::{SessionExt as ClogSessionExt, XidStatus, XACTS_PER_BYTE};
 use crate::guc;
-use crate::test::new_worker;
-use crate::utils::{Worker, Xid};
+use crate::utils::Xid;
 use crate::KB_BLCKSZ;
 use std::assert_eq;
 
-fn get_xid_status(w: &Worker, xids: &[Xid]) -> Vec<XidStatus> {
-    let idxes: Vec<usize> = (0..xids.len()).into_iter().collect();
-    let mut ret = VecXidStatus::new(xids.len());
-    w.get_xid_status(xids, &idxes, &mut ret).unwrap();
-    let mut v = Vec::<XidStatus>::with_capacity(xids.len());
-    for idx in 0..xids.len() {
-        v.push(ret.get_xid_status(idx));
-    }
-    v
-}
-
-fn get_single_xid_status(w: &Worker, xid: Xid) -> XidStatus {
-    let xids = [xid];
-    get_xid_status(w, &xids)[0]
-}
-
 #[test]
 fn t() {
-    let worker = new_worker();
-    assert_eq!(
-        1,
-        guc::get_int(&worker.state.gucstate, guc::ClogL2cacheSize)
-    );
+    let sess = super::new_session();
+    assert_eq!(1, guc::get_int(&sess.gucstate, guc::ClogL2cacheSize));
 
     let xid = Xid::new(1).unwrap();
-    assert_eq!(XidStatus::InProgress, get_single_xid_status(&worker, xid));
-    worker.set_xid_status(xid, XidStatus::Committed).unwrap();
-    assert_eq!(XidStatus::Committed, get_single_xid_status(&worker, xid));
+    assert_eq!(XidStatus::InProgress, sess.clog.xid_status(xid).unwrap());
+    sess.clog.set_xid_status(xid, XidStatus::Committed).unwrap();
+    assert_eq!(XidStatus::Committed, sess.clog.xid_status(xid).unwrap());
 
     let xid = Xid::new(KB_BLCKSZ as u64 * XACTS_PER_BYTE * 4).unwrap();
-    assert_eq!(XidStatus::InProgress, get_single_xid_status(&worker, xid));
-    worker.set_xid_status(xid, XidStatus::Committed).unwrap();
-    assert_eq!(XidStatus::Committed, get_single_xid_status(&worker, xid));
+    assert_eq!(XidStatus::InProgress, sess.clog.xid_status(xid).unwrap());
+    sess.clog.set_xid_status(xid, XidStatus::Committed).unwrap();
+    assert_eq!(XidStatus::Committed, sess.clog.xid_status(xid).unwrap());
 
     let xid = Xid::new(1).unwrap();
-    assert_eq!(XidStatus::Committed, get_single_xid_status(&worker, xid));
+    assert_eq!(XidStatus::Committed, sess.clog.xid_status(xid).unwrap());
 }

@@ -107,6 +107,18 @@
   context: KuiBaDB
   short_desc: "Sets the number of XIDs before XID wraparound at which we will no longer allow the system to be started"
   boot_val: 2000000000
-
-
-
+- vartype: INT
+  name: mvcc_blk_rows
+  context: SigHup
+  short_desc: "The default number of rows of one mvcc block."
+  boot_val: 65536
+- vartype: INT
+  name: data_blk_rows
+  context: SigHup
+  short_desc: "The default number of rows of one data block."
+  boot_val: 65536
+- vartype: INT
+  name: max_files_per_process
+  context: SigHup
+  short_desc: "Sets the maximum number of simultaneously open files for each server process."
+  boot_val: 1000

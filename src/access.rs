@@ -14,7 +14,7 @@ use crate::datums::Datums;
 use crate::executor::DestReceiver;
 use crate::parser::sem;
 use crate::utils::fmgr::{get_fn_addr, FmgrInfo};
-use crate::utils::{SessionState, Worker};
+use crate::utils::{SessionState, WorkerState};
 use crate::{protocol, Oid};
 use std::debug_assert;
 use std::net::TcpStream;
@@ -22,6 +22,9 @@ use std::rc::Rc;
 
 pub mod ckpt;
 pub mod clog;
+pub mod cs;
+pub mod csmvcc;
+pub mod fd;
 pub mod lmgr;
 pub mod redo;
 mod slru;
@@ -83,7 +86,7 @@ impl DestReceiver for DestRemote<'_> {
         &mut self,
         tuples: &[Rc<Datums>],
         orownum: u32,
-        worker: &Worker,
+        worker: &WorkerState,
     ) -> anyhow::Result<()> {
         debug_assert!(tuples.len() == self.typout.len());
         let rownum = orownum as u64;
@@ -94,7 +97,7 @@ impl DestReceiver for DestRemote<'_> {
                 &self.typout[idx],
                 &mut self.outstr[idx],
                 &tuples[idx..idx + 1],
-                &worker.state,
+                &worker,
             )?;
         }
 

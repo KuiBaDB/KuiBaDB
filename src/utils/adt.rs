@@ -31,20 +31,22 @@ fn ornull(ret: &mut Datums, left: &Datums, right: &Datums) {
 }
 
 macro_rules! typbinop {
-    ($ret: ident, $left: ident, $right: ident, $optyp: ty, $binop: ident, $getsingle: ident, $setsingle: ident, $getat: ident, $setat: ident) => {
+    ($ret: ident, $left: ident, $right: ident, $optyp: ty, $binop: ident) => {
         let retdatum = Rc::make_mut($ret);
         if $left.is_single() && $right.is_single() {
             if $left.is_single_null() || $right.is_single_null() {
                 retdatum.set_single_null();
                 return Ok(());
             }
-            let (retval, of) = $left.$getsingle().$binop($right.$getsingle());
+            let (retval, of) = $left
+                .get_single_fixedlen::<$optyp>()
+                .$binop($right.get_single_fixedlen::<$optyp>());
             kbensure!(
                 !of,
                 ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE,
                 "integer out of range"
             );
-            retdatum.$setsingle(retval);
+            retdatum.set_single_fixedlen(retval);
             return Ok(());
         }
         if $left.is_single() {
@@ -54,18 +56,18 @@ macro_rules! typbinop {
                 return Ok(());
             }
             retdatum.set_notnull_all();
-            let li32 = $left.$getsingle();
+            let li32: $optyp = $left.get_single_fixedlen();
             for idx in 0..$right.len() as isize {
                 if $right.is_null_at(idx) {
                     retdatum.set_null_at(idx);
                 } else {
-                    let (reti32, of) = li32.$binop($right.$getat(idx));
+                    let (reti32, of) = li32.$binop($right.get_fixedlen_at(idx));
                     kbensure!(
                         !of,
                         ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE,
                         "integer out of range"
                     );
-                    retdatum.$setat(idx, reti32);
+                    retdatum.set_fixedlen_at(idx, reti32);
                 }
             }
             return Ok(());
@@ -77,18 +79,18 @@ macro_rules! typbinop {
                 return Ok(());
             }
             retdatum.set_notnull_all();
-            let li32 = $right.$getsingle();
+            let li32 = $right.get_single_fixedlen();
             for idx in 0..$left.len() as isize {
                 if $left.is_null_at(idx) {
                     retdatum.set_null_at(idx);
                 } else {
-                    let (reti32, of) = $left.$getat(idx).$binop(li32);
+                    let (reti32, of) = $left.get_fixedlen_at::<$optyp>(idx).$binop(li32);
                     kbensure!(
                         !of,
                         ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE,
                         "integer out of range"
                     );
-                    retdatum.$setat(idx, reti32);
+                    retdatum.set_fixedlen_at(idx, reti32);
                 }
             }
             return Ok(());
@@ -98,13 +100,15 @@ macro_rules! typbinop {
         ornull(retdatum, $left, $right);
         for idx in 0..$left.len() as isize {
             if !retdatum.is_null_at(idx) {
-                let (retval, of) = $left.$getat(idx).$binop($right.$getat(idx));
+                let (retval, of) = $left
+                    .get_fixedlen_at::<$optyp>(idx)
+                    .$binop($right.get_fixedlen_at::<$optyp>(idx));
                 kbensure!(
                     !of,
                     ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE,
                     "integer out of range"
                 );
-                retdatum.$setsingle(retval);
+                retdatum.set_single_fixedlen(retval);
             }
         }
     };
@@ -112,17 +116,7 @@ macro_rules! typbinop {
 
 macro_rules! i32binop {
     ($ret: ident, $left: ident, $right: ident, $binop: ident) => {
-        typbinop!(
-            $ret,
-            $left,
-            $right,
-            i32,
-            $binop,
-            get_single_i32,
-            set_single_i32,
-            get_i32_at,
-            set_i32_at
-        )
+        typbinop!($ret, $left, $right, i32, $binop)
     };
 }
 
@@ -134,11 +128,6 @@ pub fn int4pl(
 ) -> anyhow::Result<()> {
     let left = &args[0];
     let right = &args[1];
-    log::debug!(
-        "int4pl: l: {}, r: {}",
-        left.get_single_i32(),
-        right.get_single_i32()
-    );
     i32binop!(ret, left, right, overflowing_add);
     return Ok(());
 }
@@ -155,7 +144,7 @@ pub fn int4out(
         if arg.is_single_null() {
             retdatum.set_single_null();
         } else {
-            retdatum.set_single_varchar(arg.get_single_i32().to_string().as_bytes());
+            retdatum.set_single_varchar(arg.get_single_fixedlen::<i32>().to_string().as_bytes());
         }
         return Ok(());
     }
@@ -163,7 +152,9 @@ pub fn int4out(
     retdatum.set_null_to(arg);
     for idx in 0..arg.len() as isize {
         if !arg.is_null_at(idx) {
-            retdatum.set_varchar_at(idx, arg.get_i32_at(idx).to_string().as_bytes());
+            retdatum.set_varchar_at(idx, arg.get_fixedlen_at::<i32>(idx).to_string().as_bytes());
+        } else {
+            retdatum.set_empty_at(idx);
         }
     }
     return Ok(());

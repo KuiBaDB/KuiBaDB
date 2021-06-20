@@ -10,6 +10,9 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+use crate::access::clog::SessionExt as ClogSessionExt;
+use crate::access::clog::WorkerExt as ClogWorkerExt;
+use crate::access::fd::{SessionExt as FDSessionExt, WorkerExt as FDWorkerExt};
 use crate::access::lmgr;
 use crate::access::{clog, wal, xact};
 use crate::catalog::namespace::SessionStateExt as NameSpaceSessionStateExt;
@@ -18,16 +21,20 @@ use crate::{guc, protocol, GlobalState};
 use anyhow::anyhow;
 use chrono::offset::Local;
 use chrono::DateTime;
-use std::cell::RefCell;
+use nix::libc::off_t;
+use nix::sys::uio::IoVec;
+use nix::unistd::SysconfVar::IOV_MAX;
+use std::alloc::Layout;
 use std::fs::File;
 use std::io::Write;
 use std::net::TcpStream;
 use std::num::NonZeroU16;
+use std::os::unix::io::RawFd;
 use std::path::Path;
+use std::ptr::NonNull;
 use std::sync::{atomic::AtomicBool, atomic::AtomicU32, Arc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::NamedTempFile;
-use thread_local::ThreadLocal;
 
 pub mod adt;
 pub mod err;
@@ -35,34 +42,7 @@ pub mod fmgr;
 pub mod marc;
 pub mod sb;
 
-pub struct Worker {
-    pub cache: &'static RefCell<WorkerCache>, // thread local
-    pub state: WorkerState,
-}
-
-impl Worker {
-    pub fn new(state: WorkerState) -> Worker {
-        let cache = state
-            .worker_cache
-            .get_or(|| RefCell::new(WorkerCache::new(&state)));
-        Worker { cache, state }
-    }
-}
-
-pub struct WorkerCache {
-    pub clog: clog::WorkerCacheExt,
-}
-
-impl WorkerCache {
-    fn new(state: &WorkerState) -> WorkerCache {
-        WorkerCache {
-            clog: clog::WorkerCacheExt::new(&state.gucstate),
-        }
-    }
-}
-
 pub struct WorkerState {
-    pub worker_cache: &'static ThreadLocal<RefCell<WorkerCache>>,
     pub clog: clog::WorkerStateExt,
     pub fmgr_builtins: &'static fmgr::FmgrBuiltinsMap,
     pub sessid: u32,
@@ -74,7 +54,6 @@ pub struct WorkerState {
 impl WorkerState {
     pub fn new(session: &SessionState) -> WorkerState {
         WorkerState {
-            worker_cache: session.worker_cache,
             fmgr_builtins: session.fmgr_builtins,
             sessid: session.sessid,
             reqdb: session.reqdb,
@@ -83,10 +62,14 @@ impl WorkerState {
             clog: session.clog,
         }
     }
+
+    pub fn init_thread_locals(&self) {
+        self.resize_clog_l1cache();
+        self.resize_fdcache();
+    }
 }
 
 pub struct SessionState {
-    pub worker_cache: &'static ThreadLocal<RefCell<WorkerCache>>,
     pub clog: clog::WorkerStateExt,
     pub fmgr_builtins: &'static fmgr::FmgrBuiltinsMap,
     pub sessid: u32,
@@ -106,6 +89,11 @@ pub struct SessionState {
 }
 
 impl SessionState {
+    pub fn init_thread_locals(&self) {
+        self.resize_clog_l1cache();
+        self.resize_fdcache();
+    }
+
     pub fn new(
         sessid: u32,
         reqdb: Oid,
@@ -129,7 +117,6 @@ impl SessionState {
             stmt_startts: now.into(),
             xact: xact::SessionStateExt::new(gstate.xact, now),
             wal: gstate.wal,
-            worker_cache: gstate.worker_cache,
             lmgrg: gstate.lmgr,
             lmgrs: lmgr::SessionStateExt::new(),
             oid_creator: gstate.oid_creator,
@@ -150,8 +137,9 @@ impl SessionState {
     pub fn update_stmt_startts(&mut self) {
         self.stmt_startts = KBSystemTime::now();
     }
-    pub fn new_worker(&self) -> Worker {
-        Worker::new(WorkerState::new(self))
+
+    pub fn new_worker(&self) -> WorkerState {
+        WorkerState::new(self)
     }
 }
 
@@ -256,4 +244,117 @@ impl std::convert::From<KBSystemTime> for u64 {
     fn from(v: KBSystemTime) -> Self {
         v.0.duration_since(UNIX_EPOCH).unwrap().as_secs()
     }
+}
+
+fn valid_layout(size: usize, align: usize) -> bool {
+    // align is the typalign that has been checked at CRAETE TYPE.
+    debug_assert!(align.is_power_of_two());
+    size <= usize::MAX - (align - 1)
+}
+
+// Use std::alloc::Allocator instead.
+// Just like Vec and HashMap, out-of-memory is not considered here..
+pub fn doalloc(mut size: usize, align: usize) -> NonNull<u8> {
+    if size == 0 {
+        // GlobalAlloc: undefined behavior can result if the caller does not ensure
+        // that layout has non-zero size.
+        size = 2;
+    }
+    debug_assert!(Layout::from_size_align(size, align).is_ok());
+    let ret = unsafe { std::alloc::alloc(Layout::from_size_align_unchecked(size, align)) };
+    return NonNull::new(ret).expect("alloc failed");
+}
+
+pub fn alloc(size: usize, align: usize) -> NonNull<u8> {
+    assert!(
+        valid_layout(size, align),
+        "valid_layout failed: size: {}, align: {}",
+        size,
+        align
+    );
+    return doalloc(size, align);
+}
+
+pub fn dealloc(ptr: NonNull<u8>, mut size: usize, align: usize) {
+    if size == 0 {
+        size = 2;
+    }
+    debug_assert!(Layout::from_size_align(size, align).is_ok());
+    unsafe {
+        std::alloc::dealloc(ptr.as_ptr(), Layout::from_size_align_unchecked(size, align));
+    }
+}
+
+pub fn realloc(ptr: NonNull<u8>, align: usize, mut osize: usize, mut nsize: usize) -> NonNull<u8> {
+    if osize == 0 {
+        osize = 2;
+    }
+    if nsize == 0 {
+        nsize = 2;
+    }
+    assert!(
+        valid_layout(nsize, align),
+        "valid_layout failed: size: {}, align: {}",
+        nsize,
+        align
+    );
+    debug_assert!(Layout::from_size_align(osize, align).is_ok());
+    let ret = unsafe {
+        std::alloc::realloc(
+            ptr.as_ptr(),
+            Layout::from_size_align_unchecked(osize, align),
+            nsize,
+        )
+    };
+    return NonNull::new(ret).expect("realloc failed");
+}
+
+#[cfg(target_os = "linux")]
+fn pwritev(fd: RawFd, iov: &[IoVec<&[u8]>], offset: off_t) -> nix::Result<usize> {
+    use nix::sys::uio::pwritev as _pwritev;
+    _pwritev(fd, iov, offset)
+}
+
+#[cfg(target_os = "macos")]
+fn pwritev(fd: RawFd, iov: &[IoVec<&[u8]>], offset: off_t) -> nix::Result<usize> {
+    use nix::sys::uio::pwrite;
+    let mut buff = Vec::<u8>::new();
+    for iv in iov {
+        buff.extend_from_slice(iv.as_slice());
+    }
+    pwrite(fd, buff.as_slice(), offset)
+}
+
+pub fn pwritevn<'a>(
+    fd: RawFd,
+    iov: &'a mut [IoVec<&'a [u8]>],
+    mut offset: off_t,
+) -> nix::Result<usize> {
+    let orig_offset = offset;
+    let iovmax = IOV_MAX as usize;
+    let iovlen = iov.len();
+    let mut sidx: usize = 0;
+    while sidx < iovlen {
+        let eidx = std::cmp::min(iovlen, sidx + iovmax);
+        let wplan = &mut iov[sidx..eidx];
+        let mut part = pwritev(fd, wplan, offset)?;
+        offset += part as off_t;
+        for wiov in wplan {
+            let wslice = wiov.as_slice();
+            let wiovlen = wslice.len();
+            if wiovlen > part {
+                let wpartslice = unsafe {
+                    std::slice::from_raw_parts(wslice.as_ptr().add(part), wiovlen - part)
+                };
+                *wiov = IoVec::from_slice(wpartslice);
+                break;
+            }
+            sidx += 1;
+            part -= wiovlen;
+            if part <= 0 {
+                break;
+            }
+        }
+    }
+    Ok((offset - orig_offset) as usize)
 }

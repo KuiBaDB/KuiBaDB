@@ -8,7 +8,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use super::clog::{WorkerExt as clog_worker_ext, XidStatus};
+use super::clog::XidStatus;
 use super::redo::RedoState;
 use super::wal::{self, Lsn, RecordHdr, Rmgr, RmgrId, XlogInfo};
 use crate::access::lmgr::SessionExt as LMGRSessionExt;
@@ -361,13 +361,9 @@ fn record_tran_commit(sess: &mut SessionState) {
     return;
 }
 
-fn get_xid_status(sess: &SessionState, xid: Xid) -> anyhow::Result<XidStatus> {
-    sess.new_worker().xid_status(xid)
-}
-
 fn record_tran_abort(sess: &mut SessionState) -> anyhow::Result<()> {
     if let Some(xid) = tctx(sess).xid {
-        if get_xid_status(sess, xid)? == XidStatus::Committed {
+        if sess.clog.xid_status(xid)? == XidStatus::Committed {
             panic!("cannot abort transaction {}, it was already committed", xid);
         }
         log_xact_rec(sess, KBSystemTime::now(), XactInfo::Abort);
@@ -733,7 +729,7 @@ impl Rmgr for XactRmgr {
             XactInfo::Commit => XidStatus::Committed,
             XactInfo::Abort => XidStatus::Aborted,
         };
-        return state.worker.set_xid_status(xid, xidstatus);
+        return state.worker.clog.set_xid_status(xid, xidstatus);
     }
 
     fn desc(&self, out: &mut String, hdr: &RecordHdr, data: &[u8]) {

@@ -16,7 +16,6 @@ use anyhow::Context;
 use log;
 use rand;
 use static_assertions::const_assert;
-use std::cell::RefCell;
 use std::cmp::Ordering as cmpord;
 use std::cmp::{max, min};
 use std::collections::HashMap;
@@ -26,8 +25,7 @@ use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, Ordering::Relaxed};
 use std::sync::{Arc, Condvar, Mutex};
 use stderrlog::{ColorChoice, Timestamp};
-use thread_local::ThreadLocal;
-use utils::{err::errcode, AttrNumber, SessionState, WorkerCache};
+use utils::{err::errcode, AttrNumber, SessionState};
 
 pub mod access;
 pub mod catalog;
@@ -376,6 +374,8 @@ pub fn postgres_main(global_state: GlobalState, mut streamv: TcpStream, sessid: 
         };
     }
 
+    state.init_thread_locals();
+
     loop {
         check_termreq!();
         protocol::write_message(stream, &protocol::ReadyForQuery::new(state.xact_status()));
@@ -522,7 +522,6 @@ pub struct GlobalState {
     pub clog: &'static clog::GlobalStateExt,
     pub cancelmap: &'static Mutex<CancelMap>,
     pub gucstate: Arc<guc::GucState>,
-    pub worker_cache: &'static ThreadLocal<RefCell<WorkerCache>>,
     pub wal: Option<&'static wal::GlobalStateExt>,
     pub xact: Option<&'static xact::GlobalStateExt>,
     pub oid_creator: Option<&'static AtomicU32>, // nextoid
@@ -541,7 +540,6 @@ impl GlobalState {
             clog: make_static(clog::init(&gucstate)),
             lmgr: make_static(lmgr::GlobalStateExt::new()),
             gucstate: gucstate,
-            worker_cache: make_static(ThreadLocal::new()),
             oid_creator: None,
             wal: None,
             xact: None,

@@ -10,15 +10,13 @@
 // limitations under the License.
 use crate::access::redo::RedoState;
 use crate::guc::{self, GucState};
-use crate::utils::{persist, KBSystemTime, Xid};
+use crate::utils::{persist, pwritevn, KBSystemTime, Xid};
 use crate::{make_static, Oid};
 use anyhow::anyhow;
 use log;
 use memoffset::offset_of;
 use nix::libc::off_t;
 use nix::sys::uio::{pread, IoVec};
-use nix::unistd::SysconfVar::IOV_MAX;
-use std::cmp::min;
 use std::convert::{From, Into};
 use std::fmt::Write;
 use std::fs::{self, read_dir, File, OpenOptions};
@@ -26,61 +24,11 @@ use std::io::Read;
 use std::mem::size_of;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::thread::panicking;
 use std::{debug_assert, debug_assert_eq};
-
-#[cfg(target_os = "linux")]
-fn pwritev(fd: RawFd, iov: &[IoVec<&[u8]>], offset: off_t) -> nix::Result<usize> {
-    use nix::sys::uio::pwritev as _pwritev;
-    _pwritev(fd, iov, offset)
-}
-
-#[cfg(target_os = "macos")]
-fn pwritev(fd: RawFd, iov: &[IoVec<&[u8]>], offset: off_t) -> nix::Result<usize> {
-    use nix::sys::uio::pwrite;
-    let mut buff = Vec::<u8>::new();
-    for iv in iov {
-        buff.extend_from_slice(iv.as_slice());
-    }
-    pwrite(fd, buff.as_slice(), offset)
-}
-
-fn pwritevn<'a>(
-    fd: RawFd,
-    iov: &'a mut [IoVec<&'a [u8]>],
-    mut offset: off_t,
-) -> nix::Result<usize> {
-    let orig_offset = offset;
-    let iovmax = IOV_MAX as usize;
-    let iovlen = iov.len();
-    let mut sidx: usize = 0;
-    while sidx < iovlen {
-        let eidx = min(iovlen, sidx + iovmax);
-        let wplan = &mut iov[sidx..eidx];
-        let mut part = pwritev(fd, wplan, offset)?;
-        offset += part as off_t;
-        for wiov in wplan {
-            let wslice = wiov.as_slice();
-            let wiovlen = wslice.len();
-            if wiovlen > part {
-                let wpartslice = unsafe {
-                    std::slice::from_raw_parts(wslice.as_ptr().add(part), wiovlen - part)
-                };
-                *wiov = IoVec::from_slice(wpartslice);
-                break;
-            }
-            sidx += 1;
-            part -= wiovlen;
-            if part <= 0 {
-                break;
-            }
-        }
-    }
-    Ok((offset - orig_offset) as usize)
-}
 
 #[derive(Debug)]
 pub struct Ckpt {

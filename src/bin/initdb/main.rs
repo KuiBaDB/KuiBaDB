@@ -73,7 +73,7 @@ const KB_DATABASE_ATTRS: [Attr; 5] = [
     },
 ];
 
-const KB_CLASS_ATTRS: [Attr; 7] = [
+const KB_CLASS_ATTRS: [Attr; 8] = [
     Attr {
         name: "oid",
         // "u32",
@@ -108,6 +108,11 @@ const KB_CLASS_ATTRS: [Attr; 7] = [
         name: "relfrozenxid",
         // "u64, null is 0",
         sqlite_type: "int not null",
+    },
+    Attr {
+        name: "reloptions",
+        // key=val,key2=val2
+        sqlite_type: "varchar not null",
     },
 ];
 
@@ -354,13 +359,13 @@ fn create_template0_metadata() {
     conn.execute(format!(
         "
     create table kb_class({}, unique (relname, relnamespace));
-    insert into kb_class values({}, 'kb_class', {}, 0, 114, {}, 0);
-    insert into kb_class values({}, 'kb_attribute', {}, 0, 114, {}, 0);
-    insert into kb_class values({}, 'kb_operator', {}, 0, 114, {}, 0);
-    insert into kb_class values({}, 'kb_database', {}, 1, 114, {}, 0);
-    insert into kb_class values({}, 'kb_namespace', {}, 0, 114, {}, 0);
-    insert into kb_class values({}, 'kb_proc', {}, 0, 114, {}, 0);
-    insert into kb_class values({}, 'kb_type', {}, 0, 114, {}, 0);
+    insert into kb_class values({}, 'kb_class', {}, 0, 114, {}, 0, '');
+    insert into kb_class values({}, 'kb_attribute', {}, 0, 114, {}, 0, '');
+    insert into kb_class values({}, 'kb_operator', {}, 0, 114, {}, 0, '');
+    insert into kb_class values({}, 'kb_database', {}, 1, 114, {}, 0, '');
+    insert into kb_class values({}, 'kb_namespace', {}, 0, 114, {}, 0, '');
+    insert into kb_class values({}, 'kb_proc', {}, 0, 114, {}, 0, '');
+    insert into kb_class values({}, 'kb_type', {}, 0, 114, {}, 0, '');
     ",
         attrs_to_ddl(&KB_CLASS_ATTRS),
         RELRELID,
