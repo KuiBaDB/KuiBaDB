@@ -70,6 +70,7 @@ pub fn redo(datadir: &str) -> anyhow::Result<GlobalState> {
                 match h.id {
                     RmgrId::Xlog => xlogrmgr.redo(&h, &data, &mut redo_state)?,
                     RmgrId::Xact => xactrmgr.redo(&h, &data, &mut redo_state)?,
+                    _ => todo!(),
                 }
             }
         }

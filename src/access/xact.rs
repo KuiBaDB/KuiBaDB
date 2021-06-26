@@ -14,7 +14,7 @@ use super::wal::{self, Lsn, RecordHdr, Rmgr, RmgrId, XlogInfo};
 use crate::access::lmgr::SessionExt as LMGRSessionExt;
 use crate::kbbail;
 use crate::protocol::XactStatus;
-use crate::utils::{dec_xid, inc_xid, KBSystemTime, SessionState, Xid};
+use crate::utils::{dec_xid, inc_xid, KBSystemTime, SessionState, WorkerState, Xid};
 use crate::Oid;
 use anyhow::{anyhow, bail};
 use log;
@@ -442,7 +442,7 @@ fn cleanup_tran(sess: &mut SessionState) -> anyhow::Result<()> {
 }
 
 fn log_nextoid(sess: &mut SessionState, nextoid: u32) {
-    let rec = wal::start_record(&nextoid);
+    let rec = wal::start_record_raw(&nextoid.to_ne_bytes());
     sess.insert_record(RmgrId::Xlog, XlogInfo::NextOid as u8, rec);
     return;
 }
@@ -505,6 +505,7 @@ impl SessionExt for SessionState {
         }
         return Ok(());
     }
+
     fn commit_tran_cmd(&mut self) -> anyhow::Result<()> {
         match tctx(self).block_state {
             TBlockState::Default => {
@@ -534,6 +535,7 @@ impl SessionExt for SessionState {
         }
         return Ok(());
     }
+
     fn abort_cur_tran(&mut self) -> anyhow::Result<()> {
         match tctx(self).block_state {
             TBlockState::Default => {
@@ -565,6 +567,7 @@ impl SessionExt for SessionState {
         }
         return Ok(());
     }
+
     fn begin_tran_block(&mut self) -> anyhow::Result<()> {
         match tctx(self).block_state {
             TBlockState::Started => {
@@ -587,6 +590,7 @@ impl SessionExt for SessionState {
         }
         return Ok(());
     }
+
     fn end_tran_block(&mut self) -> anyhow::Result<bool> {
         let mut ret = false;
         match tctx(self).block_state {
@@ -614,6 +618,7 @@ impl SessionExt for SessionState {
         }
         return Ok(ret);
     }
+
     fn user_abort_tran_block(&mut self) -> anyhow::Result<()> {
         match tctx(self).block_state {
             TBlockState::Inprogress | TBlockState::Started => {
@@ -636,9 +641,11 @@ impl SessionExt for SessionState {
         }
         return Ok(());
     }
+
     fn is_aborted(&self) -> bool {
         itctx(self).block_state == TBlockState::Abort
     }
+
     fn insert_record(&mut self, id: RmgrId, info: u8, mut rec: Vec<u8>) -> Lsn {
         wal::finish_record(&mut rec, id, info, self.xact.tranctx.xid);
         let ret = self.wal.unwrap().insert_record(rec);
@@ -743,5 +750,55 @@ impl Rmgr for XactRmgr {
                 write!(out, "ABORT {:?}", xact).unwrap();
             }
         }
+    }
+}
+
+pub struct WorkerStateExt {
+    last_rec_end: Option<Lsn>,
+    xid: Option<Xid>,
+}
+
+impl WorkerStateExt {
+    pub fn new(sess: &SessionState) -> Self {
+        Self {
+            last_rec_end: None,
+            xid: sess.xact.tranctx.xid,
+        }
+    }
+}
+
+pub trait WorkerExt {
+    fn insert_record(&mut self, id: RmgrId, info: u8, rec: Vec<u8>) -> Lsn;
+    fn try_insert_record(
+        &mut self,
+        id: RmgrId,
+        info: u8,
+        rec: Vec<u8>,
+        page_lsn: Lsn,
+    ) -> Option<Lsn>;
+}
+
+impl WorkerExt for WorkerState {
+    fn insert_record(&mut self, id: RmgrId, info: u8, mut rec: Vec<u8>) -> Lsn {
+        wal::finish_record(&mut rec, id, info, self.xact.xid);
+        let ret = self.wal.unwrap().insert_record(rec);
+        self.xact.last_rec_end = Some(ret);
+        return ret;
+    }
+
+    fn try_insert_record(
+        &mut self,
+        id: RmgrId,
+        info: u8,
+        mut r: Vec<u8>,
+        page_lsn: Lsn,
+    ) -> Option<Lsn> {
+        wal::finish_record(&mut r, id, info, self.xact.xid);
+        let ret = self.wal.unwrap().try_insert_record(r, page_lsn);
+        if ret.is_none() {
+            return None;
+        }
+        self.xact.last_rec_end = ret;
+        return ret;
     }
 }

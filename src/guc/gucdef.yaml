@@ -118,6 +118,11 @@
   short_desc: "The default number of rows of one data block."
   boot_val: 65536
 - vartype: INT
+  name: mvcc_buf_cap
+  context: KuiBaDB
+  short_desc: "The default capacity of MvccBuf"
+  boot_val: 16
+- vartype: INT
   name: max_files_per_process
   context: SigHup
   short_desc: "Sets the maximum number of simultaneously open files for each server process."

@@ -215,6 +215,7 @@ pub trait Rmgr {
 pub enum RmgrId {
     Xlog,
     Xact,
+    CSMvcc,
 }
 
 impl From<u8> for RmgrId {
@@ -684,24 +685,30 @@ impl std::convert::From<&RecordHdrSer> for RecordHdr {
 }
 
 pub fn start_record<T>(val: &T) -> Vec<u8> {
-    let mut record = Vec::<u8>::with_capacity(RECHDRLEN + size_of::<T>());
-    record.resize(RECHDRLEN, 0);
     unsafe {
         let ptr = val as *const T as *const u8;
         let d = std::slice::from_raw_parts(ptr, size_of::<T>());
-        record.extend_from_slice(d);
+        start_record_raw(d)
     }
+}
+
+pub fn start_record_raw(val: &[u8]) -> Vec<u8> {
+    let mut record = Vec::<u8>::with_capacity(RECHDRLEN + val.len());
+    record.resize(RECHDRLEN, 0);
+    record.extend_from_slice(val);
     return record;
 }
 
 pub fn finish_record(d: &mut [u8], id: RmgrId, info: u8, xid: Option<Xid>) {
     let len = d.len();
-    if len > u32::MAX as usize || len < RECHDRLEN {
-        panic!(
-            "invalid record in finish_record(). len={} id={:?} info={} xid={:?}",
-            len, id, info, xid
-        );
-    }
+    assert!(
+        len <= u32::MAX as usize && len >= RECHDRLEN,
+        "invalid record in finish_record(). len={} id={:?} info={} xid={:?}",
+        len,
+        id,
+        info,
+        xid
+    );
     let crc = crc32c::crc32c(data_area(d));
     let len = len as u32;
     let hdr = mut_hdr(d);
@@ -1003,6 +1010,10 @@ impl GlobalStateExt {
             FlushAction::Flush(weak_file) => self.do_fsync(weak_file, lsnval),
             FlushAction::Write(wreq) => self.do_write(wreq, lsnval),
         }
+    }
+
+    pub fn recently_redo_lsn(&self) -> Lsn {
+        Lsn::new(self.redo.load(Ordering::Relaxed)).unwrap()
     }
 }
 

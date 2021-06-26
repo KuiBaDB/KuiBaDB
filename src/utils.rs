@@ -43,7 +43,9 @@ pub mod marc;
 pub mod sb;
 
 pub struct WorkerState {
+    pub wal: Option<&'static wal::GlobalStateExt>,
     pub clog: clog::WorkerStateExt,
+    pub xact: xact::WorkerStateExt,
     pub fmgr_builtins: &'static fmgr::FmgrBuiltinsMap,
     pub sessid: u32,
     pub reqdb: Oid,
@@ -60,6 +62,8 @@ impl WorkerState {
             termreq: session.termreq.clone(),
             gucstate: session.gucstate.clone(),
             clog: session.clog,
+            xact: xact::WorkerStateExt::new(session),
+            wal: session.wal,
         }
     }
 

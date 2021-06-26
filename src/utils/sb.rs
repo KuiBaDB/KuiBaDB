@@ -20,10 +20,11 @@ pub trait SBK: Eq + Hash + Copy + std::fmt::Debug {}
 impl<K: Eq + Hash + Copy + std::fmt::Debug> SBK for K {}
 
 pub trait Value: std::marker::Sized {
-    type Data;
+    type LoadCtx;
+    type CommonData;
     type K: SBK;
-    fn load(k: &Self::K, ctx: &Self::Data) -> anyhow::Result<Self>;
-    fn store(&self, k: &Self::K, ctx: &Self::Data, force: bool) -> anyhow::Result<()>;
+    fn load(k: &Self::K, ctx: &Self::LoadCtx, dat: &Self::CommonData) -> anyhow::Result<Self>;
+    fn store(&self, k: &Self::K, ctx: &Self::CommonData, force: bool) -> anyhow::Result<()>;
 }
 
 type Map<V, E> = HashMap<<V as Value>::K, Box<Slot<V, E>>>;
@@ -45,7 +46,7 @@ pub trait EvictPolicy: std::marker::Sized {
 
 pub struct SharedBuffer<V: Value, E: EvictPolicy> {
     dat: RwLock<(Map<V, E>, E)>,
-    valctx: V::Data,
+    pub valctx: V::CommonData,
     cap: usize,
 }
 
@@ -81,7 +82,7 @@ impl<V: Value, E: EvictPolicy> Drop for SharedBuffer<V, E> {
 
 // TODO: Add prometheus metric and bgwriter thread. bgwriter thread will periodly flush dirty slot.
 impl<V: Value, E: EvictPolicy> SharedBuffer<V, E> {
-    pub fn new(cap: usize, evict: E, valctx: V::Data) -> Self {
+    pub fn new(cap: usize, evict: E, valctx: V::CommonData) -> Self {
         Self {
             dat: RwLock::new((Map::with_capacity(cap), evict)),
             cap,
@@ -202,7 +203,7 @@ impl<V: Value, E: EvictPolicy> SharedBuffer<V, E> {
         }
     }
 
-    pub fn read(&self, k: &V::K) -> anyhow::Result<SlotPinGuard<V, E>> {
+    pub fn read(&self, k: &V::K, loadctx: &V::LoadCtx) -> anyhow::Result<SlotPinGuard<V, E>> {
         let (slot, valid) = self.get(k)?;
         if valid {
             return Ok(SlotPinGuard(slot));
@@ -210,7 +211,7 @@ impl<V: Value, E: EvictPolicy> SharedBuffer<V, E> {
         if !slot.startio(true) {
             return Ok(SlotPinGuard(slot));
         }
-        match V::load(k, &self.valctx) {
+        match V::load(k, loadctx, &self.valctx) {
             Ok(v) => {
                 slot.setv(v);
                 slot.endio(false, SLOT_VALID);
@@ -286,7 +287,7 @@ fn valid(state: u32) -> bool {
 
 pub struct Slot<V: Value, E: EvictPolicy> {
     k: V::K,
-    v: RwLock<Option<V>>, // Use MaybeUninit when assume_init_ref is stable.
+    pub v: RwLock<Option<V>>, // Use MaybeUninit when assume_init_ref is stable.
     state: AtomicU32,
     evict: E::Data,
 }
@@ -405,7 +406,7 @@ impl<V: Value, E: EvictPolicy> Slot<V, E> {
     // and the dirty flag should have been cleared.
     // The slot may be still dirty after do_flush() return, others may modify the slot in parallel
     // when they have the read lock, just like MarkBufferDirtyHint() in PostgreSQL.
-    fn do_flush(&self, v: &V, valctx: &V::Data, force: bool) -> anyhow::Result<()> {
+    fn do_flush(&self, v: &V, valctx: &V::CommonData, force: bool) -> anyhow::Result<()> {
         if !self.startio(false) {
             return Ok(());
         }
@@ -422,7 +423,7 @@ impl<V: Value, E: EvictPolicy> Slot<V, E> {
         }
     }
 
-    fn try_flush(&self, valctx: &V::Data) -> anyhow::Result<bool> {
+    fn try_flush(&self, valctx: &V::CommonData) -> anyhow::Result<bool> {
         match self.v.try_read() {
             Ok(gurad) => {
                 self.do_flush(gurad.as_ref().unwrap(), valctx, false)?;
@@ -437,7 +438,7 @@ impl<V: Value, E: EvictPolicy> Slot<V, E> {
         }
     }
 
-    fn flush(&self, valctx: &V::Data) -> anyhow::Result<()> {
+    fn flush(&self, valctx: &V::CommonData) -> anyhow::Result<()> {
         let v = self.v.read().unwrap();
         self.do_flush(v.as_ref().unwrap(), valctx, true)
     }
@@ -555,12 +556,12 @@ impl EvictPolicy for FIFOPolicy {
     }
 }
 
-pub fn new_fifo_sb<V: Value>(cap: usize, valctx: V::Data) -> SharedBuffer<V, FIFOPolicy> {
+pub fn new_fifo_sb<V: Value>(cap: usize, valctx: V::CommonData) -> SharedBuffer<V, FIFOPolicy> {
     SharedBuffer::new(cap, FIFOPolicy::new(), valctx)
 }
 
 // TODO: Implement the real LRUPolicy based on the method in slru.rs.
 pub type LRUPolicy = FIFOPolicy;
-pub fn new_lru_sb<V: Value>(cap: usize, valctx: V::Data) -> SharedBuffer<V, LRUPolicy> {
+pub fn new_lru_sb<V: Value>(cap: usize, valctx: V::CommonData) -> SharedBuffer<V, LRUPolicy> {
     SharedBuffer::new(cap, LRUPolicy::new(), valctx)
 }

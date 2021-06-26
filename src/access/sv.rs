@@ -189,14 +189,15 @@ fn write_manifest(path: &str, sv: &SupVer) -> anyhow::Result<()> {
 }
 
 impl sb::Value for SupVer {
-    type Data = &'static PendingFileOps;
+    type CommonData = &'static PendingFileOps;
+    type LoadCtx = ();
     type K = TableId;
 
-    fn load(k: &Self::K, _ctx: &Self::Data) -> anyhow::Result<Self> {
+    fn load(k: &Self::K, _ctx2: &Self::LoadCtx, _ctx: &Self::CommonData) -> anyhow::Result<Self> {
         read_manifest(&get_minafest_path(k.db, k.table))
     }
 
-    fn store(&self, k: &Self::K, ctx: &Self::Data, _force: bool) -> anyhow::Result<()> {
+    fn store(&self, k: &Self::K, ctx: &Self::CommonData, _force: bool) -> anyhow::Result<()> {
         let manifestpath = get_minafest_path(k.db, k.table);
         write_manifest(&manifestpath, self)?;
 
