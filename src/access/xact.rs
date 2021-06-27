@@ -247,6 +247,13 @@ pub struct SessionStateExt {
     last_rec_end: Option<Lsn>,
 }
 
+fn lsn2u64(v: Option<Lsn>) -> u64 {
+    match v {
+        None => 0,
+        Some(x) => x.get(),
+    }
+}
+
 impl SessionStateExt {
     pub fn new(xact: Option<&'static GlobalStateExt>, startts: KBSystemTime) -> Self {
         Self {
@@ -259,6 +266,14 @@ impl SessionStateExt {
             },
             snap: None,
             last_rec_end: None,
+        }
+    }
+
+    pub fn exit_worker(&mut self, e: WorkerExitExt) {
+        let sess_rec_end = lsn2u64(self.last_rec_end);
+        let worker_rec_end = lsn2u64(e.last_rec_end);
+        if sess_rec_end < worker_rec_end {
+            self.last_rec_end = e.last_rec_end;
         }
     }
 }
@@ -758,11 +773,21 @@ pub struct WorkerStateExt {
     xid: Option<Xid>,
 }
 
+pub struct WorkerExitExt {
+    last_rec_end: Option<Lsn>,
+}
+
 impl WorkerStateExt {
     pub fn new(sess: &SessionState) -> Self {
         Self {
             last_rec_end: None,
             xid: sess.xact.tranctx.xid,
+        }
+    }
+
+    pub fn exit(&self) -> WorkerExitExt {
+        WorkerExitExt {
+            last_rec_end: self.last_rec_end,
         }
     }
 }

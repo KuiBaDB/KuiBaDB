@@ -21,6 +21,7 @@ use crate::{guc, protocol, GlobalState};
 use anyhow::anyhow;
 use chrono::offset::Local;
 use chrono::DateTime;
+use crossbeam_channel::{unbounded, Receiver};
 use nix::libc::off_t;
 use nix::sys::uio::IoVec;
 use nix::unistd::SysconfVar::IOV_MAX;
@@ -35,6 +36,7 @@ use std::ptr::NonNull;
 use std::sync::{atomic::AtomicBool, atomic::AtomicU32, Arc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::NamedTempFile;
+use threadpool::ThreadPool;
 
 pub mod adt;
 pub mod err;
@@ -51,6 +53,10 @@ pub struct WorkerState {
     pub reqdb: Oid,
     pub termreq: Arc<AtomicBool>,
     pub gucstate: Arc<guc::GucState>,
+}
+
+pub struct WorkerExit {
+    pub xact: xact::WorkerExitExt,
 }
 
 impl WorkerState {
@@ -71,9 +77,16 @@ impl WorkerState {
         self.resize_clog_l1cache();
         self.resize_fdcache();
     }
+
+    pub fn exit(&self) -> WorkerExit {
+        WorkerExit {
+            xact: self.xact.exit(),
+        }
+    }
 }
 
 pub struct SessionState {
+    thdpool: Option<threadpool::ThreadPool>,
     pub clog: clog::WorkerStateExt,
     pub fmgr_builtins: &'static fmgr::FmgrBuiltinsMap,
     pub sessid: u32,
@@ -108,6 +121,7 @@ impl SessionState {
     ) -> Self {
         let now = KBSystemTime::now();
         Self {
+            thdpool: None,
             sessid,
             reqdb,
             db,
@@ -144,6 +158,48 @@ impl SessionState {
 
     pub fn new_worker(&self) -> WorkerState {
         WorkerState::new(self)
+    }
+
+    pub fn exit_worker(&mut self, e: WorkerExit) {
+        self.xact.exit_worker(e.xact);
+    }
+
+    fn pool(&self) -> &ThreadPool {
+        // unsafe {self.thdpool.as_ref().unwrap_unchecked()}
+        self.thdpool.as_ref().unwrap()
+    }
+
+    fn resize_pool(&mut self, parallel: usize) {
+        match self.thdpool.as_mut() {
+            None => {
+                self.thdpool = Some(ThreadPool::new(parallel));
+            }
+            Some(p) => {
+                debug_assert_eq!(p.queued_count(), 0);
+                p.set_num_threads(parallel);
+            }
+        }
+    }
+
+    pub fn exec<Args: Send + 'static, Ret: Send + 'static>(
+        &mut self,
+        parallel: usize,
+        args_gene: impl Fn(usize) -> Args,
+        body: impl FnOnce(Args, &mut WorkerState) -> Ret + Send + 'static + Clone,
+    ) -> Receiver<(WorkerExit, Ret)> {
+        self.resize_pool(parallel);
+        let (send, receiver) = unbounded::<(WorkerExit, Ret)>();
+        for idx in 0..parallel {
+            let args = args_gene(idx);
+            let mut worker = self.new_worker();
+            let body2 = body.clone();
+            let send2 = send.clone();
+            self.pool().execute(move || {
+                let ret = body2(args, &mut worker);
+                send2.send((worker.exit(), ret)).unwrap();
+            });
+        }
+        return receiver;
     }
 }
 

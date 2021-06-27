@@ -140,6 +140,7 @@ pub struct PageCtx {
     tableid: TableId,
     blk_rows: u32,
     pending_ops: &'static PendingFileOps,
+    walapi: Option<&'static wal::GlobalStateExt>,
 }
 
 const_assert!(size_of::<usize>() == size_of::<u64>());
@@ -201,6 +202,12 @@ impl Value for Page {
 
     fn store(&self, k: &Self::K, ctx: &Self::CommonData, _force: bool) -> anyhow::Result<()> {
         debug_assert_eq!(self.blk_rows(), ctx.blk_rows);
+        debug_assert!(self.lsn().is_some());
+        if let Some(walapi) = ctx.walapi {
+            if let Some(pagelsn) = self.lsn() {
+                walapi.fsync(pagelsn);
+            }
+        }
         let crcval = self.calc_crc32c().to_ne_bytes();
         let mut iovec = [
             IoVec::from_slice(&crcval),
@@ -227,10 +234,15 @@ pub struct MVCCBuf {
     pages: SharedBuffer<Page, FIFOPolicy>,
 }
 
+pub struct MVCCBufCtx {
+    pending_ops: &'static PendingFileOps,
+    walapi: Option<&'static wal::GlobalStateExt>,
+}
+
 impl Value for MVCCBuf {
     type K = TableId;
     type LoadCtx = (/* mvcc_blk_rows */ u32, /* mvcc_buf_cap */ u32);
-    type CommonData = &'static PendingFileOps;
+    type CommonData = MVCCBufCtx;
 
     fn load(k: &Self::K, lctx: &Self::LoadCtx, ctx: &Self::CommonData) -> anyhow::Result<Self> {
         return Ok(MVCCBuf {
@@ -239,7 +251,8 @@ impl Value for MVCCBuf {
                 PageCtx {
                     tableid: *k,
                     blk_rows: lctx.0,
-                    pending_ops: *ctx,
+                    pending_ops: ctx.pending_ops,
+                    walapi: ctx.walapi,
                 },
             ),
         });

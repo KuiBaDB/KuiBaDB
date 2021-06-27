@@ -26,6 +26,8 @@ tempfile = "3.2"
 chrono = "0.4"
 bit-vec = "0.6"
 md5 = "0.7"
+crossbeam-channel = "0.5"
+threadpool = "1.8"
 
 
 [build-dependencies]

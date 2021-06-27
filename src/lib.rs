@@ -500,6 +500,8 @@ fn do_exec_simple_query(
             parser::sem::Stmt::Optimizable(ref stmt) => exec_optimizable(stmt, session, stream),
         }?;
     }
+    // TODO(盏一): Send the response after commit_tran_cmd() to
+    // avoid the user seeing the response, but we abort the transaction.
     session.commit_tran_cmd()?;
     return Ok(());
 }

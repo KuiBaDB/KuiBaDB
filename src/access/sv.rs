@@ -18,12 +18,18 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::fs;
 use std::io::{Cursor, Seek, SeekFrom};
 use std::mem;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
+use std::sync::RwLock;
+
+#[derive(Copy, Clone)]
+struct L0State {
+    inuse: bool,
+    len: u64,
+    rownum: u64,
+}
 
 struct L0File {
     fileid: FileId,
-    inuse: AtomicBool,
-    len: AtomicU64,
+    state: RwLock<L0State>,
 }
 
 #[derive(Eq, Hash, Copy, Clone, Debug, PartialEq)]
@@ -60,6 +66,7 @@ impl Destory for L0File {
 struct ImmFile {
     fileid: FileId,
     len: u64,
+    rownum: u64,
 }
 
 impl Destory for ImmFile {
@@ -96,14 +103,15 @@ pub const INIT_MANIFEST_DAT: [u8; 4] = [0xe2, 0xf0, 0x33, 0x01];
 
 fn read_level_files<T>(
     cursor: &mut Cursor<&[u8]>,
-    on_file: impl Fn(u32, u64) -> T,
+    on_file: impl Fn(u32, u64, u64) -> T,
 ) -> anyhow::Result<Vec<T>> {
     let numl0 = cursor.read_u32::<LittleEndian>()?;
     let mut l0files = Vec::with_capacity(numl0 as usize);
     for _i in 0..numl0 {
         let fileid = cursor.read_u32::<LittleEndian>()?;
         let filelen = cursor.read_u64::<LittleEndian>()?;
-        l0files.push(on_file(fileid, filelen));
+        let rownum = cursor.read_u64::<LittleEndian>()?;
+        l0files.push(on_file(fileid, filelen, rownum));
     }
     return Ok(l0files);
 }
@@ -136,16 +144,20 @@ fn read_manifest(path: &str) -> anyhow::Result<SupVer> {
         ver
     );
 
-    let l0files = read_level_files(&mut cursor, |fileid, filelen| L0File {
+    let l0files = read_level_files(&mut cursor, |fileid, filelen, rownum| L0File {
         fileid: FileId::new(fileid).unwrap(),
-        inuse: AtomicBool::new(false),
-        len: AtomicU64::new(filelen),
+        state: RwLock::new(L0State {
+            inuse: false,
+            len: filelen,
+            rownum,
+        }),
     })?;
 
-    let on_file_for_l1 = |fileid, filelen| {
+    let on_file_for_l1 = |fileid, filelen, rownum| {
         Marc::new(ImmFile {
             fileid: FileId::new(fileid).unwrap(),
             len: filelen,
+            rownum,
         })
     };
     let l1files = read_level_files(&mut cursor, on_file_for_l1)?;
@@ -160,13 +172,14 @@ fn read_manifest(path: &str) -> anyhow::Result<SupVer> {
 fn write_level_files<T>(
     files: &Vec<T>,
     cursor: &mut Cursor<Vec<u8>>,
-    on_file: impl Fn(&T) -> (u32, u64),
+    on_file: impl Fn(&T) -> (u32, u64, u64),
 ) -> anyhow::Result<()> {
     cursor.write_u32::<LittleEndian>(files.len() as u32)?;
     for file in files {
-        let (fileid, filelen) = on_file(file);
+        let (fileid, filelen, rownum) = on_file(file);
         cursor.write_u32::<LittleEndian>(fileid)?;
         cursor.write_u64::<LittleEndian>(filelen)?;
+        cursor.write_u64::<LittleEndian>(rownum)?;
     }
     return Ok(());
 }
@@ -176,9 +189,10 @@ fn write_manifest(path: &str, sv: &SupVer) -> anyhow::Result<()> {
     cursor.write_u32::<LittleEndian>(MANIFEST_VER)?;
 
     write_level_files(&sv.l0, &mut cursor, |file: &L0File| {
-        (file.fileid.get(), file.len.load(Relaxed))
+        let l0state = { file.state.read().unwrap() };
+        (file.fileid.get(), l0state.len, l0state.rownum)
     })?;
-    let on_file = |file: &Marc<ImmFile>| (file.fileid.get(), file.len);
+    let on_file = |file: &Marc<ImmFile>| (file.fileid.get(), file.len, file.rownum);
     write_level_files(&sv.l1, &mut cursor, on_file)?;
     write_level_files(&sv.l2, &mut cursor, on_file)?;
 
