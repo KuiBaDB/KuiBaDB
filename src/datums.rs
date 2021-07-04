@@ -8,11 +8,13 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+use crate::access::rel;
 use crate::utils::{alloc, dealloc, doalloc, realloc};
 use static_assertions::const_assert;
 use std::mem::{align_of, size_of, transmute_copy};
 use std::ptr::copy_nonoverlapping as memcpy;
 use std::ptr::NonNull;
+use std::rc::Rc;
 use std::slice;
 use std::str::{self, from_utf8};
 
@@ -44,6 +46,8 @@ pub struct Datums {
     datums_align: usize,
     blob_cap: usize,
     // blob_align is always align_of::<u8>().
+    // null.len() is either 0 or ndatum,
+    // and if null.len() is ndatum, null.any() must be true.
     null: bit_vec::BitVec,
 }
 
@@ -61,6 +65,10 @@ fn as_varchar(v: &[u8]) -> &str {
     debug_assert!(valid_varchar(v));
     return unsafe { str::from_utf8_unchecked(v) };
 }
+
+unsafe impl Send for Datums {}
+
+unsafe impl Sync for Datums {}
 
 impl Datums {
     pub fn new() -> Datums {
@@ -195,6 +203,15 @@ impl Datums {
         return unsafe { self.datums.unwrap().cast::<T>().as_ptr().offset(idx) };
     }
 
+    fn datums_as_bytes(&self, from: isize, len: usize) -> &[u8] {
+        debug_assert!(self.datums.is_some());
+        debug_assert!(from as usize + len <= self.datums_cap);
+        unsafe {
+            let ptr = self.datums.unwrap().as_ptr().offset(from);
+            slice::from_raw_parts(ptr, len)
+        }
+    }
+
     fn set_datums_at<T: Copy>(&self, idx: isize, val: T) {
         unsafe {
             *self.datums_at(idx) = val;
@@ -309,7 +326,24 @@ impl Datums {
         self.ndatum
     }
 
+    pub fn set_len(&mut self, newlen: u32) {
+        debug_assert!(!self.is_single());
+        debug_assert!(newlen <= NDATUM_MAX);
+        self.ndatum = newlen;
+        debug_assert!(!self.is_single());
+        return;
+    }
+
+    // #[cfg(debug_assertions)]
+    fn null_is_valid(&self) -> bool {
+        if self.null.is_empty() {
+            return true;
+        }
+        return self.len() as usize == self.null.len() && self.null.any();
+    }
+
     pub fn is_null_at(&self, idx: isize) -> bool {
+        debug_assert!(self.null_is_valid());
         let idx = idx as usize;
         return match self.null.get(idx) {
             None => false,
@@ -318,6 +352,7 @@ impl Datums {
     }
 
     pub fn set_null_all(&mut self) {
+        debug_assert!(self.null_is_valid());
         debug_assert!(!self.is_single());
         let rownum = self.len() as usize;
         self.null.reserve(rownum);
@@ -325,35 +360,72 @@ impl Datums {
             self.null.set_len(rownum);
         }
         self.null.set_all();
+        debug_assert!(self.null_is_valid());
         return;
     }
 
     pub fn set_notnull_all(&mut self) {
+        debug_assert!(self.null_is_valid());
         unsafe {
             self.null.set_len(0);
         }
+        debug_assert!(self.null_is_valid());
     }
 
     pub fn set_null_at(&mut self, idx: isize) {
+        debug_assert!(self.null_is_valid());
         debug_assert!(!self.is_single());
         debug_assert!(idx < self.ndatum as isize);
+        debug_assert!(idx >= 0);
         let idx = idx as usize;
-        if idx < self.null.len() {
-            self.null.set(idx, true);
-            return;
+        if self.null.is_empty() {
+            self.null.grow(self.len() as usize, false);
         }
-        if idx > self.null.len() {
-            self.null.grow(idx - self.null.len(), false);
-        }
-        self.null.push(true);
+        debug_assert_eq!(self.null.len(), self.len() as usize);
+        self.null.set(idx, true);
+        debug_assert!(self.null_is_valid());
         return;
     }
 
     pub fn set_null_to(&mut self, other: &Self) {
+        debug_assert!(self.null_is_valid());
         self.null = other.null.clone();
+        debug_assert!(self.null_is_valid());
     }
 
-    pub fn clonerc(v: &std::rc::Rc<Datums>) -> std::rc::Rc<Datums> {
+    pub fn has_null(&self) -> bool {
+        if self.is_single() {
+            return self.is_single_null();
+        }
+        debug_assert!(self.null_is_valid());
+        return !self.null.is_empty();
+    }
+
+    // ret.null = left.null | right.null
+    pub fn set_null_or(&mut self, left: &Self, right: &Self) {
+        debug_assert!(self.null_is_valid());
+        debug_assert!(!left.is_single());
+        debug_assert!(!right.is_single());
+        debug_assert_eq!(left.len(), right.len());
+        debug_assert_eq!(self.len(), left.len());
+        if left.null.is_empty() {
+            self.set_null_to(right);
+            debug_assert!(self.null_is_valid());
+            return;
+        }
+        self.set_null_to(left);
+        if right.null.is_empty() {
+            debug_assert!(self.null_is_valid());
+            return;
+        }
+        debug_assert_eq!(left.null.len(), right.null.len());
+        debug_assert_eq!(left.null.len(), left.len() as usize);
+        self.null.or(&right.null);
+        debug_assert!(self.null_is_valid());
+        return;
+    }
+
+    pub fn clonerc(v: &Rc<Datums>) -> Rc<Datums> {
         v.clone()
     }
 
@@ -431,6 +503,69 @@ impl Clone for Datums {
             d.datums = Some(doalloc(self.datums_cap, self.datums_align));
         }
         return d;
+    }
+}
+
+fn ser_fixed_nonull(
+    out: &mut Vec<u8>,
+    typlen: i16,
+    rownum: u32,
+    colidx: usize,
+    input: &[(Vec<Rc<Datums>>, u32)],
+) {
+    debug_assert!(typlen > 0);
+    debug_assert!(rownum <= NDATUM_MAX);
+    let datumlen = typlen as usize * rownum as usize;
+    let cap = size_of::<u32>()  /* ndatum */
+        + size_of::<u32>() /* nullbitmap_len */
+        + datumlen;
+    out.reserve(cap);
+    let outlen = out.len();
+
+    out.extend_from_slice(&rownum.to_ne_bytes());
+    out.extend_from_slice(&0u32.to_ne_bytes());
+    for (cols, colrownum) in input {
+        let colrownum = *colrownum;
+        let col = &cols[colidx];
+        debug_assert!(!col.has_null());
+        if col.is_single() {
+            let blobdat = col.blob_cap.to_ne_bytes();
+            let item = if typlen <= 8 {
+                &blobdat[..typlen as usize]
+            } else {
+                col.datums_as_bytes(0, typlen as usize)
+            };
+            for _idx in 0..colrownum {
+                out.extend_from_slice(item);
+            }
+        } else {
+            debug_assert_eq!(colrownum, col.len());
+            let collen = colrownum as usize * typlen as usize;
+            out.extend_from_slice(col.datums_as_bytes(0, collen));
+        }
+    }
+    debug_assert_eq!(out.len(), outlen + cap);
+    return;
+}
+
+pub fn ser(
+    out: &mut Vec<u8>,
+    rel: &rel::Rel,
+    rownum: u32,
+    hasnull: &[bool],
+    input: &[(Vec<Rc<Datums>>, u32)],
+) {
+    for colidx in 0..rel.attrs.len() {
+        let typlen = rel.attrs[colidx].typ.len;
+        if typlen > 0 {
+            if hasnull[colidx] {
+                unimplemented!();
+            } else {
+                ser_fixed_nonull(out, typlen, rownum, colidx, input);
+            }
+        } else {
+            unimplemented!();
+        }
     }
 }
 

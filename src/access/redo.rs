@@ -85,6 +85,10 @@ pub fn redo(datadir: &str) -> anyhow::Result<GlobalState> {
     );
 
     walreader.storage.recycle(walreader.endlsn)?;
+    // Use CreateCheckPoint() instead.
+    g.tabsv.flushall(true)?;
+    g.tabmvcc.flushall(true)?;
+
     g.oid_creator = Some(make_static(AtomicU32::new(redo_state.nextoid.get())));
     let readlsn = match walreader.readlsn {
         None => return Err(anyhow!("walreader.readlsn is None")),
@@ -101,5 +105,6 @@ pub fn redo(datadir: &str) -> anyhow::Result<GlobalState> {
         redo_state.nextxid,
         guc::get_int(&g.gucstate, guc::XidStopLimit),
     )));
+    g.renew();
     Ok(g)
 }

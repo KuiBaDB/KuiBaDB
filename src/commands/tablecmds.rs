@@ -9,7 +9,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 use crate::access::sv;
-use crate::access::{TupleDesc, TypeDesc};
+use crate::access::TypeDesc;
 use crate::catalog::namespace::SessionExt;
 use crate::catalog::{qualname_get_type, FormType};
 use crate::guc;
@@ -21,6 +21,10 @@ use crate::utils::{ExecSQLOnDrop, SessionState};
 use crate::xact::SessionExt as XACTSessionExt;
 use anyhow::ensure;
 use std::fs;
+
+struct TupleDesc {
+    pub desc: Vec<TypeDesc>,
+}
 
 // LookupTypeNameExtended
 fn get_type_desc(
@@ -140,8 +144,5 @@ pub fn create_table(
     state.metaconn.execute("commit")?;
     std::mem::forget(_rollback);
 
-    return Ok(Response {
-        resp: None,
-        tag: "CREATE TABLE",
-    });
+    return Ok(Response::new("CREATE TABLE"));
 }

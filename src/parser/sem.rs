@@ -29,6 +29,7 @@ pub enum UtilityStmt<'syn, 'input> {
     CreateTable(&'syn syn::CreateTableStmt<'input>),
     Tran(&'syn syn::TranStmt),
     Lock(&'syn syn::LockStmt<'input>),
+    Copy(&'syn syn::CopyStmt<'input>),
 }
 
 pub type ExprHash = md5::Digest;
@@ -370,6 +371,7 @@ pub fn kb_analyze<'syn, 'input>(
         }
         syn::Stmt::CreateTable(v) => Ok(Stmt::Utility(UtilityStmt::CreateTable(v))),
         syn::Stmt::Lock(v) => Ok(Stmt::Utility(UtilityStmt::Lock(v))),
+        syn::Stmt::Copy(v) => Ok(Stmt::Utility(UtilityStmt::Copy(v))),
         syn::Stmt::Empty => unreachable!(),
     }
 }

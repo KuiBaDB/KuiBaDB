@@ -8,6 +8,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+use crate::access::ckpt::PendingFileOps;
 use crate::access::slru;
 use crate::guc;
 use crate::guc::GucState;
@@ -17,22 +18,29 @@ use crate::KB_BLCKSZ;
 use anyhow;
 use lru::LruCache;
 use std::cell::RefCell;
+use std::sync::atomic::Ordering::Relaxed;
 
 pub struct GlobalStateExt {
     d: slru::Slru,
 }
 
 impl GlobalStateExt {
-    fn new(l2cache_size: usize) -> GlobalStateExt {
+    fn new(l2cache_size: usize, pending_ops: &'static PendingFileOps) -> GlobalStateExt {
         GlobalStateExt {
-            d: slru::Slru::new(l2cache_size, "kb_xact"),
+            d: slru::Slru::new(
+                l2cache_size,
+                slru::CommonData {
+                    pending_ops,
+                    dir: "kb_xact",
+                },
+            ),
         }
     }
 }
 
-pub fn init(gucstate: &GucState) -> GlobalStateExt {
+pub fn init(gucstate: &GucState, pending_ops: &'static PendingFileOps) -> GlobalStateExt {
     let clog_l2cache_size = guc::get_int(gucstate, guc::ClogL2cacheSize) as usize;
-    GlobalStateExt::new(clog_l2cache_size)
+    GlobalStateExt::new(clog_l2cache_size, pending_ops)
 }
 
 #[derive(Copy, Clone)]
@@ -59,10 +67,6 @@ fn u8_get_xid_status(byteval: u8, bidx: u64) -> XidStatus {
     ((byteval >> bshift) & XACT_BITMASK).into()
 }
 
-fn get_xid_status(buff: &[u8], byteno: usize, bidx: u64) -> XidStatus {
-    u8_get_xid_status(buff[byteno], bidx)
-}
-
 impl WorkerStateExt {
     pub fn new(g: &'static GlobalStateExt) -> WorkerStateExt {
         WorkerStateExt { g }
@@ -75,9 +79,17 @@ impl WorkerStateExt {
         let bshift = bidx * BITS_PER_XACT;
         let andbits = !(XACT_BITMASK << bshift);
         let orbits = (status as u8) << bshift;
-        // Add group commit like TransactionGroupUpdateXidStatus
         self.g.d.writable_load(xid_to_pageno(xid), |buff| {
-            buff[byteno] = (buff[byteno] & andbits) | orbits;
+            let byteval = &buff.0[byteno];
+            let mut state = byteval.load(Relaxed);
+            loop {
+                let newstate = (state & andbits) | orbits;
+                let res = byteval.compare_exchange_weak(state, newstate, Relaxed, Relaxed);
+                match res {
+                    Ok(_) => break,
+                    Err(s) => state = s,
+                }
+            }
         })
     }
 
@@ -88,7 +100,8 @@ impl WorkerStateExt {
         let pageno = xid_to_pageno(xid.get());
         let xidstatus = self.g.d.try_readonly_load(pageno, |buff| -> XidStatus {
             let byteno = xid_to_byte(xid.get());
-            return get_xid_status(buff, byteno, xid_to_bidx(xid.get()));
+            let bidx = xid_to_bidx(xid.get());
+            return u8_get_xid_status(buff.0[byteno].load(Relaxed), bidx);
         })?;
         if xidstatus != XidStatus::InProgress {
             cache.put(xid, xidstatus);

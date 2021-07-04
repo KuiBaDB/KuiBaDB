@@ -15,21 +15,6 @@ use crate::utils::WorkerState;
 use std::mem::{align_of, size_of};
 use std::rc::Rc;
 
-fn ornull(ret: &mut Datums, left: &Datums, right: &Datums) {
-    // TODO: speed
-    debug_assert!(!left.is_single());
-    debug_assert!(!right.is_single());
-    debug_assert_eq!(left.len(), right.len());
-    debug_assert_eq!(ret.len(), left.len());
-    ret.set_notnull_all();
-    for i in 0..left.len() as isize {
-        if left.is_null_at(i) || right.is_null_at(i) {
-            ret.set_null_at(i);
-        }
-    }
-    return;
-}
-
 macro_rules! typbinop {
     ($ret: ident, $left: ident, $right: ident, $optyp: ty, $binop: ident) => {
         let retdatum = Rc::make_mut($ret);
@@ -97,7 +82,7 @@ macro_rules! typbinop {
         }
         debug_assert_eq!($left.len(), $right.len());
         retdatum.resize_fixedlen($left.len(), size_of::<$optyp>(), align_of::<$optyp>());
-        ornull(retdatum, $left, $right);
+        retdatum.set_null_or($left, $right);
         for idx in 0..$left.len() as isize {
             if !retdatum.is_null_at(idx) {
                 let (retval, of) = $left
@@ -155,6 +140,36 @@ pub fn int4out(
             retdatum.set_varchar_at(idx, arg.get_fixedlen_at::<i32>(idx).to_string().as_bytes());
         } else {
             retdatum.set_empty_at(idx);
+        }
+    }
+    return Ok(());
+}
+
+pub fn int4in(
+    _flinfo: &FmgrInfo,
+    ret: &mut Rc<Datums>,
+    args: &[Rc<Datums>],
+    _state: &WorkerState,
+) -> anyhow::Result<()> {
+    let retdatum = Rc::make_mut(ret);
+    let arg = &args[0];
+    if arg.is_single() {
+        if arg.is_single_null() {
+            retdatum.set_single_null();
+        } else {
+            let inarg = arg.get_single_varchar();
+            let out: i32 = inarg.parse()?;
+            retdatum.set_single_fixedlen(out);
+        }
+        return Ok(());
+    }
+    retdatum.resize_fixedlen(arg.len(), size_of::<i32>(), align_of::<i32>());
+    retdatum.set_null_to(arg);
+    for idx in 0..arg.len() as isize {
+        if !arg.is_null_at(idx) {
+            let instr = arg.get_varchar_at(idx);
+            let out: i32 = instr.parse()?;
+            retdatum.set_fixedlen_at(idx, out);
         }
     }
     return Ok(());

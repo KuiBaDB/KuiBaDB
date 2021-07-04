@@ -9,7 +9,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::clog::{SessionExt as ClogSessionExt, XidStatus, XACTS_PER_BYTE};
+use crate::clog::{XidStatus, XACTS_PER_BYTE};
 use crate::guc;
 use crate::utils::Xid;
 use crate::KB_BLCKSZ;

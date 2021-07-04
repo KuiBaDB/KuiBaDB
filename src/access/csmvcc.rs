@@ -10,10 +10,11 @@
 // limitations under the License.
 use crate::access::ckpt::PendingFileOps;
 use crate::access::fd;
+use crate::access::rel::RelOpt;
 use crate::access::sv::{get_mvccfile_path, TableId};
 use crate::access::wal::{self, Lsn, RmgrId};
 use crate::access::xact::WorkerExt as XACTWorkerExt;
-use crate::utils::sb::{self, FIFOPolicy, SharedBuffer, Value};
+use crate::utils::sb::{self, FIFOPolicy, LRUPolicy, SharedBuffer, Value};
 use crate::utils::Xid;
 use crate::utils::{alloc, dealloc};
 use crate::utils::{pwritevn, WorkerState};
@@ -130,6 +131,10 @@ impl Page {
     }
 }
 
+unsafe impl Send for Page {}
+
+unsafe impl Sync for Page {}
+
 impl Drop for Page {
     fn drop(&mut self) {
         dealloc(self.0, self.1, align_of::<u64>());
@@ -166,7 +171,7 @@ impl Value for Page {
         let mut page = Page::new(ctx.blk_rows as u64);
         let off = page.1 * k.blkid as usize;
         debug_assert!(off <= off_t::MAX as usize);
-        let filepath = get_mvccfile_path(ctx.tableid.db, ctx.tableid.table, k.fileid);
+        let filepath = get_mvccfile_path(ctx.tableid, k.fileid);
         let readsize = fd::use_file(&filepath, |mvccfile| -> anyhow::Result<usize> {
             return Ok(pread(
                 mvccfile.as_raw_fd(),
@@ -215,7 +220,7 @@ impl Value for Page {
         ];
         let off = self.1 * k.blkid as usize;
         debug_assert!(off <= off_t::MAX as usize);
-        let filepath = get_mvccfile_path(ctx.tableid.db, ctx.tableid.table, k.fileid);
+        let filepath = get_mvccfile_path(ctx.tableid, k.fileid);
         let wsize = fd::use_file(&filepath, |mvccfile| -> anyhow::Result<usize> {
             return Ok(pwritevn(mvccfile.as_raw_fd(), &mut iovec, off as off_t)?);
         })?;
@@ -234,23 +239,38 @@ pub struct MVCCBuf {
     pages: SharedBuffer<Page, FIFOPolicy>,
 }
 
+pub type TabMVCC = SharedBuffer<MVCCBuf, LRUPolicy>;
+pub type TabMVCCSlot = sb::Slot<MVCCBuf, LRUPolicy>;
+
 pub struct MVCCBufCtx {
     pending_ops: &'static PendingFileOps,
     walapi: Option<&'static wal::GlobalStateExt>,
 }
 
+impl MVCCBufCtx {
+    pub fn new(
+        pending_ops: &'static PendingFileOps,
+        walapi: Option<&'static wal::GlobalStateExt>,
+    ) -> Self {
+        Self {
+            pending_ops,
+            walapi,
+        }
+    }
+}
+
 impl Value for MVCCBuf {
     type K = TableId;
-    type LoadCtx = (/* mvcc_blk_rows */ u32, /* mvcc_buf_cap */ u32);
+    type LoadCtx = RelOpt;
     type CommonData = MVCCBufCtx;
 
     fn load(k: &Self::K, lctx: &Self::LoadCtx, ctx: &Self::CommonData) -> anyhow::Result<Self> {
         return Ok(MVCCBuf {
             pages: sb::new_fifo_sb(
-                lctx.1 as usize,
+                lctx.mvcc_buf_cap as usize,
                 PageCtx {
                     tableid: *k,
-                    blk_rows: lctx.0,
+                    blk_rows: lctx.mvcc_blk_rows,
                     pending_ops: ctx.pending_ops,
                     walapi: ctx.walapi,
                 },
@@ -339,9 +359,9 @@ impl MVCCBuf {
         fileid: FileId,
         mut sr: u32,
         er: u32,
-        xid: Xid,
         ws: &mut WorkerState,
     ) -> anyhow::Result<()> {
+        let xid = ws.xact.xid.unwrap();
         let blk_rows = self.pages.valctx.blk_rows;
         while sr < er {
             let blkid = sr / blk_rows;

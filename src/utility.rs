@@ -11,6 +11,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 use crate::access::xact::SessionExt as xact_sess_ext;
+use crate::commands::copy::copy_stmt;
 use crate::commands::lockcmds::lock_stmt;
 use crate::commands::tablecmds::create_table;
 use crate::commands::typecmds::define_type;
@@ -25,7 +26,27 @@ pub struct StrResp {
 
 pub struct Response {
     pub resp: Option<StrResp>,
-    pub tag: &'static str,
+    pub tag: String,
+}
+
+impl Response {
+    pub fn new(tag: &str) -> Self {
+        Self {
+            resp: None,
+            tag: tag.to_string(),
+        }
+    }
+
+    pub fn new_ex(tag: &str, name: String, val: String) -> Self {
+        Self {
+            resp: Some(StrResp { name, val }),
+            tag: tag.to_string(),
+        }
+    }
+
+    pub fn new_str(tag: String) -> Self {
+        Self { resp: None, tag }
+    }
 }
 
 fn to_i32(val: &syn::Value) -> anyhow::Result<i32> {
@@ -111,10 +132,7 @@ fn set_guc(stmt: &syn::VariableSetStmt, state: &mut SessionState) -> anyhow::Res
             guc::set_bool_guc(idx, gucval, gucstate);
         }
     }
-    Ok(Response {
-        resp: None,
-        tag: "SET",
-    })
+    return Ok(Response::new("SET"));
 }
 
 fn get_guc(stmt: &syn::VariableShowStmt, state: &SessionState) -> anyhow::Result<Response> {
@@ -127,13 +145,7 @@ fn get_guc(stmt: &syn::VariableShowStmt, state: &SessionState) -> anyhow::Result
     };
     let generic = guc::get_guc_generic(gucidx);
     let gucshow = guc::show(generic, &state.gucstate, gucidx);
-    Ok(Response {
-        resp: Some(StrResp {
-            name: gucname.to_string(),
-            val: gucshow,
-        }),
-        tag: "SHOW",
-    })
+    return Ok(Response::new_ex("SHOW", gucname.to_string(), gucshow));
 }
 
 fn tran(stmt: &syn::TranStmt, state: &mut SessionState) -> anyhow::Result<Response> {
@@ -155,7 +167,7 @@ fn tran(stmt: &syn::TranStmt, state: &mut SessionState) -> anyhow::Result<Respon
             ABORT_TAG
         }
     };
-    return Ok(Response { resp: None, tag });
+    return Ok(Response::new(tag));
 }
 
 pub fn process_utility(
@@ -169,5 +181,6 @@ pub fn process_utility(
         &sem::UtilityStmt::Tran(v) => tran(v, state),
         &sem::UtilityStmt::CreateTable(v) => create_table(v, state),
         &sem::UtilityStmt::Lock(v) => lock_stmt(state, v),
+        &sem::UtilityStmt::Copy(v) => copy_stmt(state, v),
     }
 }

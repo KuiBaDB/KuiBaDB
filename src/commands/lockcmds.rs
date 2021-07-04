@@ -20,8 +20,5 @@ pub fn lock_stmt(sess: &mut SessionState, lock: &syn::LockStmt<'_>) -> anyhow::R
     for rv in &lock.rels {
         sess.rv_get_oid(rv, lock.mode)?;
     }
-    return Ok(Response {
-        resp: None,
-        tag: "LOCK TABLE",
-    });
+    return Ok(Response::new("LOCK TABLE"));
 }

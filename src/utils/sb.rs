@@ -12,7 +12,7 @@
 use anyhow::bail;
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+use std::sync::atomic::{AtomicU32, Ordering::Acquire, Ordering::Relaxed, Ordering::Release};
 use std::sync::{RwLock, TryLockError};
 
 pub trait SBK: Eq + Hash + Copy + std::fmt::Debug {}
@@ -286,7 +286,7 @@ fn valid(state: u32) -> bool {
 }
 
 pub struct Slot<V: Value, E: EvictPolicy> {
-    k: V::K,
+    pub k: V::K,
     pub v: RwLock<Option<V>>, // Use MaybeUninit when assume_init_ref is stable.
     state: AtomicU32,
     evict: E::Data,
@@ -324,7 +324,7 @@ impl<V: Value, E: EvictPolicy> Slot<V, E> {
 
     fn set_state(&self, oldstate: u32, state: u32) -> Result<u32, u32> {
         self.state
-            .compare_exchange_weak(oldstate, state, Relaxed, Relaxed)
+            .compare_exchange_weak(oldstate, state, Release, Relaxed)
     }
 
     fn atomic_change(&self, change: impl Fn(u32) -> u32) -> u32 {
@@ -369,7 +369,7 @@ impl<V: Value, E: EvictPolicy> Slot<V, E> {
     // so do not use it for synchronization
     fn lock(&self) -> SlotLockGuard<V, E> {
         loop {
-            let state = self.state.fetch_or(SLOT_LOCKED, Relaxed);
+            let state = self.state.fetch_or(SLOT_LOCKED, Acquire);
             if locked(state) {
                 std::hint::spin_loop(); // Use a more adaptive approach.
             } else {

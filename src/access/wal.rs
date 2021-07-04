@@ -216,6 +216,7 @@ pub enum RmgrId {
     Xlog,
     Xact,
     CSMvcc,
+    SV,
 }
 
 impl From<u8> for RmgrId {
@@ -224,6 +225,10 @@ impl From<u8> for RmgrId {
             RmgrId::Xlog
         } else if v == RmgrId::Xact as u8 {
             RmgrId::Xact
+        } else if v == RmgrId::CSMvcc as u8 {
+            RmgrId::CSMvcc
+        } else if v == RmgrId::SV as u8 {
+            RmgrId::SV
         } else {
             panic!("try from u8 to RmgrId failed. value={}", v)
         }

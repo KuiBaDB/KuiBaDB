@@ -11,20 +11,18 @@
 
 use crate::catalog::namespace::SessionExt;
 use crate::parser::syn;
-use crate::utility::{Response, StrResp};
+use crate::utility::Response;
 use crate::utils::SessionState;
 
 pub fn define_type(stmt: &syn::DefineTypeStmt, state: &SessionState) -> anyhow::Result<Response> {
     let (typnsoid, typname) = state.qualname_get_create_ns(&stmt.defnames)?;
 
-    Ok(Response {
-        resp: Some(StrResp {
-            name: "CREATE TYPE".to_string(),
-            val: format!(
-                "DefineType. typensoid={} typname={} stmt={:?}",
-                typnsoid, typname, stmt
-            ),
-        }),
-        tag: "CREATE TYPE",
-    })
+    return Ok(Response::new_ex(
+        "CREATE TYPE",
+        "CREATE TYPE".to_string(),
+        format!(
+            "DefineType. typensoid={} typname={} stmt={:?}",
+            typnsoid, typname, stmt
+        ),
+    ));
 }

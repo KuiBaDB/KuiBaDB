@@ -84,9 +84,28 @@
     (1 row)
     ```
 
--   [ ] Add [columnar storage](https://blog.hidva.com/2021/04/25/kuiba-column-storage/).
+-   [x] Add [columnar storage](https://blog.hidva.com/2021/04/25/kuiba-column-storage/).
 
--   [ ] Add Copy
+-   [x] Add Parallel Copy
+
+    ```sql
+    -- KuiBaDB
+    kuiba=# create table t(col0 int,col1 int,col2 int,col3 int,col4 int,col5 int,col6 int,col7 int,col8 int,col9 int,col10 int,col11 int,col12 int,col13 int,col14 int,col15 int);
+    CREATE TABLE
+    Time: 92.237 ms
+    -- Use one thread to parse the input and 4 threads to write data.
+    -- We need to do more profiling to explain the results.
+    kuiba=# copy t from '/Users/zhanyi/NOTtmp/col16row33y.csv' DELIMITERS '|' (parallel 4);
+    COPY 10545903
+    Time: 9142.299 ms (00:09.142)
+    ```
+
+    ```sql
+    -- PostgreSQL 14beta1
+    pg14beta1=# copy t from '/Users/zhanyi/NOTtmp/col16row33y.csv' DELIMITERS '|';
+    COPY 10545903
+    Time: 13483.658 ms (00:13.484)
+    ```
 
 -   [ ] Add SeqScan
 

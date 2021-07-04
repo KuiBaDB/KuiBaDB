@@ -13,7 +13,7 @@ use crate::catalog;
 use crate::datums::Datums;
 use crate::executor::DestReceiver;
 use crate::parser::sem;
-use crate::utils::fmgr::{get_fn_addr, FmgrInfo};
+use crate::utils::fmgr::FmgrInfo;
 use crate::utils::{SessionState, WorkerState};
 use crate::{protocol, Oid};
 use std::debug_assert;
@@ -27,6 +27,7 @@ pub mod csmvcc;
 pub mod fd;
 pub mod lmgr;
 pub mod redo;
+pub mod rel;
 mod slru;
 pub mod sv;
 pub mod wal;
@@ -63,10 +64,8 @@ impl DestReceiver for DestRemote<'_> {
         for target in tlist {
             let typoid = target.expr.val_type();
             let (typoutproc, typlen) = catalog::get_type_output_info(self.session, typoid)?;
-            self.typout.push(FmgrInfo {
-                fn_addr: get_fn_addr(typoutproc, self.session.fmgr_builtins)?,
-                fn_oid: typoutproc,
-            });
+            self.typout
+                .push(FmgrInfo::new(typoutproc, self.session.fmgr_builtins)?);
             let fieldname = match &target.resname {
                 None => "", // TupleDescInitEntry() set name to empty if target.resname is None.
                 Some(v) => v,
@@ -136,8 +135,4 @@ impl TypeDesc {
         md5h.consume(self.mode.to_ne_bytes());
         return;
     }
-}
-
-pub struct TupleDesc {
-    pub desc: Vec<TypeDesc>,
 }

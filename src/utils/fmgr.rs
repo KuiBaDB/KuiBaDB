@@ -17,9 +17,19 @@ use crate::Oid;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+#[derive(Clone, Copy)]
 pub struct FmgrInfo {
     pub fn_addr: KBFunction,
     pub fn_oid: Oid,
+}
+
+impl FmgrInfo {
+    pub fn new(oid: Oid, map: &FmgrBuiltinsMap) -> anyhow::Result<Self> {
+        Ok(Self {
+            fn_oid: oid,
+            fn_addr: get_fn_addr(oid, map)?,
+        })
+    }
 }
 
 // PGFunction
@@ -33,7 +43,7 @@ pub type KBFunction = fn(
 pub type FmgrBuiltinsMap = HashMap<Oid, KBFunction>;
 pub fn get_fmgr_builtins() -> FmgrBuiltinsMap {
     let mut m = FmgrBuiltinsMap::new();
-    // TODO: MAGIC NUMBER!!!
+    m.insert(Oid::new(42).unwrap(), adt::int4in);
     m.insert(Oid::new(43).unwrap(), adt::int4out);
     m.insert(Oid::new(177).unwrap(), adt::int4pl);
     m.insert(Oid::new(181).unwrap(), adt::int4mi);
@@ -50,4 +60,15 @@ pub fn get_fn_addr(oid: Oid, map: &FmgrBuiltinsMap) -> anyhow::Result<KBFunction
             oid
         ))
         .map(|v| *v)
+}
+
+// InputFunctionCall
+pub fn call_inproc(
+    flinfo: &FmgrInfo,
+    out: &mut Rc<Datums>,
+    indatum: Rc<Datums>,
+    typmod: Rc<Datums>,
+    worker: &WorkerState,
+) -> anyhow::Result<()> {
+    (flinfo.fn_addr)(flinfo, out, &[indatum, typmod], worker)
 }

@@ -31,7 +31,6 @@ pub enum Plan {
     Result(Result),
 }
 
-// TODO: Try to simplify it, remove the match.
 impl Plan {
     pub fn common(&self) -> &PlanCommon {
         match self {

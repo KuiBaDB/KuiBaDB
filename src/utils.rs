@@ -12,8 +12,10 @@ limitations under the License.
 */
 use crate::access::clog::SessionExt as ClogSessionExt;
 use crate::access::clog::WorkerExt as ClogWorkerExt;
+use crate::access::csmvcc::TabMVCC;
 use crate::access::fd::{SessionExt as FDSessionExt, WorkerExt as FDWorkerExt};
 use crate::access::lmgr;
+use crate::access::{ckpt, sv};
 use crate::access::{clog, wal, xact};
 use crate::catalog::namespace::SessionStateExt as NameSpaceSessionStateExt;
 use crate::Oid;
@@ -103,6 +105,25 @@ pub struct SessionState {
     pub oid_creator: Option<&'static AtomicU32>, // nextoid
     pub lmgrg: &'static lmgr::GlobalStateExt,
     pub lmgrs: lmgr::SessionStateExt<'static>,
+    pub pending_fileops: &'static ckpt::PendingFileOps,
+    pub tabsv: &'static sv::TabSupVer,
+    pub tabmvcc: &'static TabMVCC,
+}
+
+pub struct WorkerExitGuard<'a, T> {
+    rec: &'a Receiver<T>,
+}
+
+impl<'a, T> WorkerExitGuard<'a, T> {
+    pub fn new(rec: &'a Receiver<T>) -> Self {
+        Self { rec }
+    }
+}
+
+impl<'a, T> Drop for WorkerExitGuard<'a, T> {
+    fn drop(&mut self) {
+        for _item in self.rec.iter() {}
+    }
 }
 
 impl SessionState {
@@ -138,6 +159,9 @@ impl SessionState {
             lmgrg: gstate.lmgr,
             lmgrs: lmgr::SessionStateExt::new(),
             oid_creator: gstate.oid_creator,
+            pending_fileops: gstate.pending_fileops,
+            tabsv: gstate.tabsv,
+            tabmvcc: gstate.tabmvcc,
         }
     }
 
@@ -160,6 +184,7 @@ impl SessionState {
         WorkerState::new(self)
     }
 
+    // Only invokded when commit.
     pub fn exit_worker(&mut self, e: WorkerExit) {
         self.xact.exit_worker(e.xact);
     }

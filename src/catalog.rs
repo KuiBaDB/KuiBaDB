@@ -11,7 +11,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 use crate::utils::SessionState;
-use crate::{kbanyhow, Oid, OptOid, DBRELID};
+use crate::{kbanyhow, kbensure, Oid, OptOid, DBRELID};
 
 pub mod namespace;
 
@@ -23,7 +23,7 @@ pub struct FormDataDatabase {
     pub datallowconn: bool,
 }
 
-fn column_val<'a>(row: &[(&str, Option<&'a str>)], name: &str) -> Option<&'a str> {
+pub fn column_val<'a>(row: &[(&str, Option<&'a str>)], name: &str) -> Option<&'a str> {
     for &(column, value) in row.iter() {
         if column == name {
             return value;
@@ -258,15 +258,24 @@ pub fn qualname_get_type(
 
 pub fn get_type_output_info(state: &SessionState, oid: Oid) -> anyhow::Result<(Oid, i16)> {
     let formtype = get_type(state, oid)?;
-    if !formtype.isdefined {
-        Err(kbanyhow!(
-            ERRCODE_UNDEFINED_OBJECT,
-            "type {} is only a shell",
-            oid
-        ))
-    } else {
-        Ok((formtype.output, formtype.len))
-    }
+    kbensure!(
+        formtype.isdefined,
+        ERRCODE_UNDEFINED_OBJECT,
+        "type {} is only a shell",
+        oid
+    );
+    return Ok((formtype.output, formtype.len));
+}
+
+pub fn get_type_input_info(state: &SessionState, oid: Oid) -> anyhow::Result<Oid> {
+    let formtype = get_type(state, oid)?;
+    kbensure!(
+        formtype.isdefined,
+        ERRCODE_UNDEFINED_OBJECT,
+        "type {} is only a shell",
+        oid
+    );
+    return Ok(formtype.input);
 }
 
 // get_relname_relid

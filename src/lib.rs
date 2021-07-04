@@ -10,8 +10,10 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+use access::csmvcc::{MVCCBufCtx, TabMVCC};
 use access::lmgr;
-use access::{clog, wal, xact, xact::SessionExt as xact_sess_ext};
+use access::sv;
+use access::{ckpt, clog, wal, xact, xact::SessionExt as xact_sess_ext};
 use anyhow::Context;
 use log;
 use rand;
@@ -25,6 +27,7 @@ use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, Ordering::Relaxed};
 use std::sync::{Arc, Condvar, Mutex};
 use stderrlog::{ColorChoice, Timestamp};
+use utils::sb;
 use utils::{err::errcode, AttrNumber, SessionState};
 
 pub mod access;
@@ -454,25 +457,23 @@ fn exec_utility(
     stmt: &parser::sem::UtilityStmt,
     session: &mut SessionState,
     stream: &mut TcpStream,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<String> {
     let resp = utility::process_utility(stmt, session)?;
     if let Some(ref strresp) = resp.resp {
         write_str_response(strresp, stream);
     }
-    write_cmd_complete(&resp.tag, stream);
-    Ok(())
+    return Ok(resp.tag.to_string());
 }
 
 fn exec_optimizable(
     stmt: &parser::sem::Query,
     session: &mut SessionState,
     stream: &mut TcpStream,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<String> {
     let plannedstmt = optimizer::planner(session, stmt)?;
     let mut dest_remote = access::DestRemote::new(session, stream);
     executor::exec_select(&plannedstmt, session, &mut dest_remote)?;
-    write_cmd_complete(format!("SELECT {}", dest_remote.processed).as_str(), stream);
-    Ok(())
+    return Ok(format!("SELECT {}", dest_remote.processed));
 }
 
 fn do_exec_simple_query(
@@ -485,24 +486,23 @@ fn do_exec_simple_query(
     session.start_tran_cmd()?;
     let ast = parser::parse(query)
         .with_context(|| errctx!(ERRCODE_SYNTAX_ERROR, "parse query failed"))?;
-    if session.is_aborted() && !ast.is_tran_exit() {
-        kbbail!(
-            ERRCODE_IN_FAILED_SQL_TRANSACTION,
-            "current transaction is aborted, commands ignored until end of transaction block"
-        );
-    }
+    kbensure!(
+        !session.is_aborted() || ast.is_tran_exit(),
+        ERRCODE_IN_FAILED_SQL_TRANSACTION,
+        "current transaction is aborted, commands ignored until end of transaction block"
+    );
     if let parser::syn::Stmt::Empty = ast {
+        session.commit_tran_cmd()?;
         protocol::write_message(stream, &protocol::EmptyQueryResponse {});
-    } else {
-        let query = parser::sem::kb_analyze(session, &ast)?;
-        match query {
-            parser::sem::Stmt::Utility(ref stmt) => exec_utility(stmt, session, stream),
-            parser::sem::Stmt::Optimizable(ref stmt) => exec_optimizable(stmt, session, stream),
-        }?;
+        return Ok(());
     }
-    // TODO(盏一): Send the response after commit_tran_cmd() to
-    // avoid the user seeing the response, but we abort the transaction.
+    let query = parser::sem::kb_analyze(session, &ast)?;
+    let cmdtag = match query {
+        parser::sem::Stmt::Utility(ref stmt) => exec_utility(stmt, session, stream),
+        parser::sem::Stmt::Optimizable(ref stmt) => exec_optimizable(stmt, session, stream),
+    }?;
     session.commit_tran_cmd()?;
+    write_cmd_complete(&cmdtag, stream);
     return Ok(());
 }
 
@@ -517,6 +517,12 @@ fn make_static<T>(v: T) -> &'static T {
     Box::leak(Box::new(v))
 }
 
+fn free_static<T>(v: &'static T) {
+    unsafe {
+        Box::from_raw(v as *const T as *mut T);
+    }
+}
+
 #[derive(Clone)]
 pub struct GlobalState {
     pub fmgr_builtins: &'static HashMap<Oid, utils::fmgr::KBFunction>,
@@ -527,6 +533,9 @@ pub struct GlobalState {
     pub wal: Option<&'static wal::GlobalStateExt>,
     pub xact: Option<&'static xact::GlobalStateExt>,
     pub oid_creator: Option<&'static AtomicU32>, // nextoid
+    pub pending_fileops: &'static ckpt::PendingFileOps,
+    pub tabsv: &'static sv::TabSupVer,
+    pub tabmvcc: &'static TabMVCC,
 }
 
 #[cfg(test)]
@@ -536,16 +545,43 @@ pub const LAST_INTERNAL_SESSID: u32 = 20181218;
 
 impl GlobalState {
     fn new(gucstate: Arc<guc::GucState>) -> GlobalState {
+        let pending_fileops = make_static(ckpt::PendingFileOps::new());
+        let table_sv_cap = guc::get_int(&gucstate, guc::TableSvCap) as usize;
+        let tabsv = sb::new_lru_sb(table_sv_cap, sv::SVCommonData::new(pending_fileops, None));
+        let tabsv = make_static(tabsv);
+        let table_mvcc_cap = guc::get_int(&gucstate, guc::TableMvccCap) as usize;
+        let tabmvccctx = MVCCBufCtx::new(pending_fileops, None);
+        let tabmvcc = sb::new_lru_sb(table_mvcc_cap, tabmvccctx);
+        let tabmvcc = make_static(tabmvcc);
         GlobalState {
             fmgr_builtins: make_static(utils::fmgr::get_fmgr_builtins()),
             cancelmap: make_static(Mutex::<CancelMap>::default()),
-            clog: make_static(clog::init(&gucstate)),
+            clog: make_static(clog::init(&gucstate, pending_fileops)),
             lmgr: make_static(lmgr::GlobalStateExt::new()),
             gucstate: gucstate,
             oid_creator: None,
             wal: None,
             xact: None,
+            pending_fileops,
+            tabsv,
+            tabmvcc,
         }
+    }
+
+    fn renew(&mut self) {
+        debug_assert!(self.wal.is_some());
+        free_static(self.tabsv);
+        let table_sv_cap = guc::get_int(&self.gucstate, guc::TableSvCap) as usize;
+        let svdata = sv::SVCommonData::new(self.pending_fileops, self.wal);
+        let tabsv = sb::new_lru_sb(table_sv_cap, svdata);
+        self.tabsv = make_static(tabsv);
+
+        free_static(self.tabmvcc);
+        let table_mvcc_cap = guc::get_int(&self.gucstate, guc::TableMvccCap) as usize;
+        let tabmvccctx = MVCCBufCtx::new(self.pending_fileops, self.wal);
+        let tabmvcc = sb::new_lru_sb(table_mvcc_cap, tabmvccctx);
+        self.tabmvcc = make_static(tabmvcc);
+        return;
     }
 
     fn init(datadir: &str) -> GlobalState {

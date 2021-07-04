@@ -127,3 +127,23 @@
   context: SigHup
   short_desc: "Sets the maximum number of simultaneously open files for each server process."
   boot_val: 1000
+- vartype: BOOL
+  name: enable_cs_wal
+  context: KuiBaDB
+  short_desc: "The default enable_cs_wal"
+  boot_val: false
+- vartype: INT
+  name: table_sv_cap
+  context: KuiBaDB
+  short_desc: "The capacity for TabSupVer"
+  boot_val: 1024
+- vartype: INT
+  name: table_mvcc_cap
+  context: KuiBaDB
+  short_desc: "The capacity for TabSupVer"
+  boot_val: 1024
+- vartype: INT
+  name: batch_size
+  context: UserSet
+  short_desc: "batch_size"
+  boot_val: 1024

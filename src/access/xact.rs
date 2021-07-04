@@ -770,7 +770,7 @@ impl Rmgr for XactRmgr {
 
 pub struct WorkerStateExt {
     last_rec_end: Option<Lsn>,
-    xid: Option<Xid>,
+    pub xid: Option<Xid>,
 }
 
 pub struct WorkerExitExt {

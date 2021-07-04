@@ -138,6 +138,7 @@ pub enum Stmt<'input> {
     Tran(TranStmt),
     CreateTable(CreateTableStmt<'input>),
     Lock(LockStmt<'input>),
+    Copy(CopyStmt<'input>),
     Empty,
 }
 
@@ -274,9 +275,17 @@ pub struct CreateTableStmt<'input> {
     pub opts: Vec<DefElem<'input>>,
 }
 
-// PG CreateStmt
 #[derive(Debug)]
 pub struct LockStmt<'input> {
     pub rels: Vec<RangeVar<'input>>,
     pub mode: LockMode,
+}
+
+#[derive(Debug)]
+pub struct CopyStmt<'input> {
+    pub rel: RangeVar<'input>,
+    pub from: bool,
+    pub filename: StrVal<'input>,
+    // delimiters, parallel, null, format=csv
+    pub opts: Vec<DefElem<'input>>,
 }

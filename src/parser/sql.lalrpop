@@ -33,6 +33,7 @@ stmt: syn::Stmt<'input> = {
     <s:TranStmt> => syn::Stmt::Tran(s),
     <s:CreateTableStmt> => syn::Stmt::CreateTable(s),
     <s:LockStmt> => syn::Stmt::Lock(s),
+    <s:CopyStmt> => syn::Stmt::Copy(s),
     // EMPTY
     => syn::Stmt::Empty,
 }
@@ -111,6 +112,10 @@ Sconst: syn::StrVal<'input> = {
     <s:SCONST> => s,
 }
 
+copy_file_name: syn::StrVal<'input> = {
+    <s:Sconst> => s,
+}
+
 SCONST: syn::StrVal<'input> = {
     // It seems that if we want to support escape, we have to implement our lexer.
     <s:XB> => syn::StrVal::InPlace(&s[1..s.len()-1]),
@@ -127,6 +132,11 @@ ColId: syn::StrVal<'input> = {
 
 match {
     // keywords
+    r"[cC][sS][vV]" => CSV,
+    r"[nN][uU][lL][lL]" => NULL_P,
+    r"[dD][eE][lL][iI][mM][iI][tT][eE][rR][sS]" => DELIMITERS,
+    r"[uU][sS][iI][nN][gG]" => USING,
+    r"[cC][oO][pP][yY]" => COPY,
     r"[wW][iI][tT][hH]" => WITH,
     r"[mM][oO][dD][eE]" => MODE,
     r"[sS][eE][lL][eE][cC][tT]" => SELECT,
@@ -134,6 +144,7 @@ match {
     r"[cC][rR][eE][aA][tT][eE]" => CREATE,
     r"[tT][yY][pP][eE]" => TYPE_P,
     r"[tT][oO]" => TO,
+    r"[fF][rR][oO][mM]" => FROM,
     r"[iI][nN]" => IN_P,
     r"[sS][eE][tT]" => SET,
     r"[sS][hH][oO][wW]" => SHOW,
@@ -472,4 +483,90 @@ lock_type: LockMode = {
 opt_lock: LockMode = {
     IN_P <s: lock_type> MODE => s,
     => LockMode::AccessExclusive,
+}
+
+copy_from: bool = {
+    FROM => true,
+    TO => false,
+}
+
+opt_using = {
+    USING,
+    => "",
+}
+
+opt_with = {
+    WITH,
+    =>"",
+}
+
+opt_as = {
+    AS,
+    =>"",
+}
+
+copy_delimiter: Option<syn::DefElem<'input>> = {
+    opt_using DELIMITERS <v:Sconst> => {
+        Some(syn::make_def_elem(syn::StrVal::InPlace("delimiter"), syn::Value::Str(v)))
+    },
+    => {
+        None
+    },
+}
+
+copy_opt_item: syn::DefElem<'input> = {
+    NULL_P opt_as <v:Sconst> => {
+        syn::make_def_elem(syn::StrVal::InPlace("null"), syn::Value::Str(v))
+    },
+    CSV => {
+        syn::make_def_elem(syn::StrVal::InPlace("format"), syn::Value::Str(syn::StrVal::InPlace("csv")))
+    },
+}
+
+copy_opt_list: Vec<syn::DefElem<'input>> = {
+    <mut v:copy_opt_list> <i:copy_opt_item> => {
+        v.push(i);
+        v
+    },
+    => {
+        vec![]
+    },
+}
+
+copy_generic_opt_elem: syn::DefElem<'input> = {
+    <n:ColLabel> <v:copy_generic_opt_arg> => {
+        syn::make_def_elem(n, v)
+    }
+}
+
+copy_generic_opt_list: Vec<syn::DefElem<'input>> = {
+    <d:copy_generic_opt_elem> => vec![d],
+    <mut v:copy_generic_opt_list> "," <i:copy_generic_opt_elem> => {
+        v.push(i);
+        v
+    }
+}
+
+copy_options: Vec<syn::DefElem<'input>> = {
+    <v:copy_opt_list> => v,
+    "(" <v:copy_generic_opt_list> ")" => v,
+}
+
+copy_generic_opt_arg: syn::Value<'input> = {
+    <v:opt_boolean_or_string> => syn::Value::Str(v),
+    <n:NumericOnly> => syn::Value::Num(n),
+}
+
+CopyStmt: syn::CopyStmt<'input> = {
+    COPY <q:qualified_name> <c:copy_from> <f:copy_file_name> <d:copy_delimiter> opt_with <mut o:copy_options> => {
+        if let Some(delopt) = d {
+            o.push(delopt);
+        }
+        syn::CopyStmt {
+            rel: q,
+            from: c,
+            filename: f,
+            opts: o,
+        }
+    }
 }

@@ -266,6 +266,10 @@ pub fn get_int(gucvals: &GucState, guckey: gucdef::I) -> i32 {
     gucvals.vals.int_vals[guckey as usize]
 }
 
+pub fn get_bool(gucvals: &GucState, guckey: gucdef::B) -> bool {
+    gucvals.vals.bool_vals[guckey as usize]
+}
+
 pub fn get_str(gucvals: &GucState, guckey: gucdef::S) -> &str {
     gucvals.vals.str_vals[guckey as usize].as_str()
 }

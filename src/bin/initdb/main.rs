@@ -197,7 +197,7 @@ const KB_ATTRIBUTE_ATTRS: [Attr; 9] = [
     },
     Attr {
         name: "attisdropped",
-        // "bool",
+        // "bool", UNUSED NOW!
         sqlite_type: "int not null",
     },
 ];

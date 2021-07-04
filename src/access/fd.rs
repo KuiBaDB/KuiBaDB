@@ -12,7 +12,9 @@ use crate::guc::{self, GucState};
 use crate::utils::{SessionState, WorkerState};
 use lru::LruCache;
 use std::cell::RefCell;
+use std::convert::From;
 use std::fs::{File, OpenOptions};
+use std::io;
 
 type FDCacheT = LruCache<String, File>;
 
@@ -20,24 +22,46 @@ thread_local! {
     static FDCACHE: RefCell<FDCacheT> = RefCell::new(LruCache::new(32));
 }
 
-fn do_use_file<T>(
+fn do_use_file<T, E: From<io::Error>>(
     cache: &mut FDCacheT,
     path: &String,
-    act: impl FnOnce(&File) -> anyhow::Result<T>,
-) -> anyhow::Result<T> {
+    act: impl FnOnce(&File) -> Result<T, E>,
+) -> Option<Result<T, E>> {
     if let Some(file) = cache.get(path) {
-        return act(file);
+        return Some(act(file));
     }
-    let file = OpenOptions::new().read(true).write(true).open(path)?;
+    let file = match OpenOptions::new().read(true).write(true).open(path) {
+        Ok(file) => file,
+        Err(err) => {
+            if err.kind() == io::ErrorKind::NotFound {
+                return None;
+            }
+            return Some(Err(err.into()));
+        }
+    };
     let ret = act(&file);
     cache.put(path.clone(), file);
-    return ret;
+    return Some(ret);
 }
 
-pub fn use_file<T>(
+pub fn use_file<T, E: From<io::Error>>(
     path: &String,
-    act: impl FnOnce(&File) -> anyhow::Result<T>,
-) -> anyhow::Result<T> {
+    act: impl FnOnce(&File) -> Result<T, E>,
+) -> Result<T, E> {
+    match try_use_file(path, act) {
+        None => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("use_file: file not found: path={}", path),
+        )
+        .into()),
+        Some(v) => v,
+    }
+}
+
+pub fn try_use_file<T, E: From<io::Error>>(
+    path: &String,
+    act: impl FnOnce(&File) -> Result<T, E>,
+) -> Option<Result<T, E>> {
     FDCACHE.with(|fdcache| {
         let cache = &mut fdcache.borrow_mut();
         return do_use_file(cache, path, act);

@@ -9,8 +9,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 use std::marker::PhantomData;
-use std::ptr::NonNull;
-use std::sync::atomic::{self, AtomicUsize, Ordering};
+use std::ptr::{self, NonNull};
+use std::sync::atomic::{self, AtomicUsize, Ordering, Ordering::Relaxed};
 
 pub trait Destory {
     type DestoryCtx;
@@ -51,16 +51,47 @@ impl<T: Destory> Marc<T> {
         &mut (*self.ptr.as_ptr()).data
     }
 
-    // Arc::drop
-    pub fn unref(mut self, ctx: &T::DestoryCtx) {
+    fn do_unref(&mut self, ctx: &T::DestoryCtx) {
         if self.inner().rc.fetch_sub(1, Ordering::Release) != 1 {
-            std::mem::forget(self);
             return;
         }
 
         atomic::fence(Ordering::Acquire);
 
         unsafe { self.get_mut_unchecked() }.destory(ctx);
+        unsafe {
+            Box::from_raw(self.ptr.as_ptr());
+        }
+        return;
+    }
+
+    // Arc::drop
+    pub fn unref(mut self, ctx: &T::DestoryCtx) {
+        self.do_unref(ctx);
+        std::mem::forget(self);
+        return;
+    }
+}
+
+impl<T: Destory + Clone> Marc<T> {
+    pub fn make_mut(&mut self, ctx: &T::DestoryCtx) -> &mut T {
+        // As Arc said:
+        // > Use Acquire to ensure that we see any writes to `weak`...
+        // Since we have no weak refcount, we use Relaxed instead of Acquire here.
+        if self
+            .inner()
+            .rc
+            .compare_exchange(1, 0, Relaxed, Relaxed)
+            .is_err()
+        {
+            let bak = Marc::new((**self).clone());
+            self.do_unref(ctx);
+            unsafe { ptr::write(self as *mut _, bak) };
+        } else {
+            self.inner().rc.store(1, Relaxed);
+        }
+        debug_assert_eq!(1, self.inner().rc.load(Relaxed));
+        unsafe { self.get_mut_unchecked() }
     }
 }
 
@@ -136,3 +167,6 @@ mod test {
         assert_eq!(0, destory_ctx.destory_cnt[id2].load(Ordering::Relaxed));
     }
 }
+
+unsafe impl<T: Sync + Send + Destory> Send for Marc<T> {}
+unsafe impl<T: Sync + Send + Destory> Sync for Marc<T> {}

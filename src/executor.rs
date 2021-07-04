@@ -54,13 +54,12 @@ impl ExprInitCtx {
 //
 // NO! f(x: Option<&i32>) will also use the stack to pass x!
 struct ExprContext<'exe> {
-    state: &'exe WorkerState,
     results: &'exe mut [Rc<Datums>],
 }
 
 impl<'exe> ExprContext<'exe> {
-    fn new(state: &'exe WorkerState, results: &'exe mut [Rc<Datums>]) -> ExprContext<'exe> {
-        Self { state, results }
+    fn new(results: &'exe mut [Rc<Datums>]) -> ExprContext<'exe> {
+        Self { results }
     }
 }
 
@@ -109,10 +108,10 @@ impl Drop for Clear {
 }
 
 impl FuncExprState {
-    fn eval(&mut self, ctx: &mut ExprContext) -> anyhow::Result<()> {
+    fn eval(&mut self, ctx: &mut ExprContext, worker: &WorkerState) -> anyhow::Result<()> {
         let _clear = Clear(&mut self.argsval as *mut _);
         for argexpr in &mut self.args {
-            argexpr.eval(ctx)?;
+            argexpr.eval(ctx, worker)?;
             let rescln = Datums::clonerc(&ctx.results[argexpr.es().residx]);
             self.argsval.push(rescln);
         }
@@ -120,7 +119,7 @@ impl FuncExprState {
             &self.func,
             &mut ctx.results[self.es.residx],
             &self.argsval,
-            ctx.state,
+            worker,
         )?;
         return Ok(());
     }
@@ -133,10 +132,10 @@ enum ExprState {
 }
 
 impl ExprState {
-    fn eval(&mut self, ctx: &mut ExprContext) -> anyhow::Result<()> {
+    fn eval(&mut self, ctx: &mut ExprContext, worker: &WorkerState) -> anyhow::Result<()> {
         match self {
             ExprState::Const(c) => c.eval(ctx),
-            ExprState::Func(f) => f.eval(ctx),
+            ExprState::Func(f) => f.eval(ctx, worker),
             ExprState::RefRes(_) => {
                 return Ok(());
             }
@@ -215,9 +214,9 @@ struct ProjectionInfo {
 }
 
 impl ProjectionInfo {
-    fn eval(&mut self, ctx: &mut ExprContext) -> anyhow::Result<()> {
+    fn eval(&mut self, ctx: &mut ExprContext, worker: &WorkerState) -> anyhow::Result<()> {
         for col in &mut self.pi_state {
-            col.eval(ctx)?;
+            col.eval(ctx, worker)?;
         }
         return Ok(());
     }
@@ -244,17 +243,17 @@ impl ProjectionInfo {
 //     state: &'exe WorkerState,
 // }
 
-struct ResultState<'exe> {
-    state: &'exe WorkerState,
+struct ResultState {
     proj_info: ProjectionInfo,
     done: bool,
     results: Vec<Rc<Datums>>,
     ret: Vec<Rc<Datums>>,
 }
 
-impl ResultState<'_> {
+impl ResultState {
     fn exec(
         &mut self,
+        worker: &WorkerState,
     ) -> anyhow::Result<(
         /* rows */ Option<&[Rc<Datums>]>,
         /* rownumber */ u32,
@@ -270,9 +269,9 @@ impl ResultState<'_> {
                 *res = Rc::new(Datums::new());
             }
         }
-        let mut ectx = ExprContext::new(self.state, &mut self.results);
+        let mut ectx = ExprContext::new(&mut self.results);
 
-        self.proj_info.eval(&mut ectx)?;
+        self.proj_info.eval(&mut ectx, worker)?;
         for expr in &self.proj_info.pi_state {
             let rescln = Datums::clonerc(&self.results[expr.es().residx]);
             self.ret.push(rescln);
@@ -281,19 +280,20 @@ impl ResultState<'_> {
     }
 }
 
-enum PlanState<'exe> {
-    Result(ResultState<'exe>),
+enum PlanState {
+    Result(ResultState),
 }
 
-impl PlanState<'_> {
+impl PlanState {
     fn exec(
         &mut self,
+        worker: &WorkerState,
     ) -> anyhow::Result<(
         /* rows */ Option<&[Rc<Datums>]>,
         /* rownumber */ u32,
     )> {
         match self {
-            PlanState::Result(s) => s.exec(),
+            PlanState::Result(s) => s.exec(worker),
         }
     }
 }
@@ -301,13 +301,12 @@ impl PlanState<'_> {
 fn exec_init_result<'opt, 'exe>(
     node: &'opt optimizer::Result,
     state: &'exe WorkerState,
-) -> anyhow::Result<ResultState<'exe>> {
+) -> anyhow::Result<ResultState> {
     let mut initctx = ExprInitCtx::new();
     let proj_info = ProjectionInfo::try_new(&node.plan.tlist, state, &mut initctx)?;
     let mut results = Vec::with_capacity(initctx.nextid);
     results.resize_with(initctx.nextid, Default::default);
     Ok(ResultState {
-        state,
         proj_info,
         results,
         done: false,
@@ -318,7 +317,7 @@ fn exec_init_result<'opt, 'exe>(
 fn exec_init_plan<'opt, 'exe>(
     node: &'opt optimizer::Plan,
     state: &'exe WorkerState,
-) -> anyhow::Result<PlanState<'exe>> {
+) -> anyhow::Result<PlanState> {
     match node {
         optimizer::Plan::Result(r) => exec_init_result(r, state).map(|v| PlanState::Result(v)),
     }
@@ -327,13 +326,13 @@ fn exec_init_plan<'opt, 'exe>(
 pub fn exec_select(
     stmt: &PlannedStmt,
     session: &SessionState,
-    dest: &mut dyn DestReceiver,
+    dest: &mut impl DestReceiver,
 ) -> anyhow::Result<()> {
     let state = WorkerState::new(session);
     let mut planstate = exec_init_plan(&stmt.plan_tree, &state)?;
     dest.startup(stmt.plan_tree.tlist())?;
     loop {
-        let (rows, rownumber) = planstate.exec()?;
+        let (rows, rownumber) = planstate.exec(&state)?;
         match rows {
             None => break,
             Some(tuples) => dest.receive(tuples, rownumber, &state)?,
