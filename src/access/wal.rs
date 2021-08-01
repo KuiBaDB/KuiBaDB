@@ -10,7 +10,7 @@
 // limitations under the License.
 use crate::access::redo::RedoState;
 use crate::guc::{self, GucState};
-use crate::utils::{persist, pwritevn, KBSystemTime, Xid};
+use crate::utils::{persist, pwritevn, ser::as_bytes, KBSystemTime, Xid};
 use crate::{make_static, Oid};
 use anyhow::anyhow;
 use log;
@@ -690,11 +690,7 @@ impl std::convert::From<&RecordHdrSer> for RecordHdr {
 }
 
 pub fn start_record<T>(val: &T) -> Vec<u8> {
-    unsafe {
-        let ptr = val as *const T as *const u8;
-        let d = std::slice::from_raw_parts(ptr, size_of::<T>());
-        start_record_raw(d)
-    }
+    start_record_raw(as_bytes(val))
 }
 
 pub fn start_record_raw(val: &[u8]) -> Vec<u8> {

@@ -9,7 +9,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 use crate::access::rel;
-use crate::utils::{alloc, dealloc, doalloc, realloc};
+use crate::utils::{alloc, dealloc, doalloc, realloc, ser};
 use static_assertions::const_assert;
 use std::mem::{align_of, size_of, transmute_copy};
 use std::ptr::copy_nonoverlapping as memcpy;
@@ -522,8 +522,8 @@ fn ser_fixed_nonull(
     out.reserve(cap);
     let outlen = out.len();
 
-    out.extend_from_slice(&rownum.to_ne_bytes());
-    out.extend_from_slice(&0u32.to_ne_bytes());
+    ser::ser_u32(out, rownum);
+    ser::ser_u32(out, 0);
     for (cols, colrownum) in input {
         let colrownum = *colrownum;
         let col = &cols[colidx];

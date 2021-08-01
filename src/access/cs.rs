@@ -13,7 +13,7 @@ use crate::access::rel;
 use crate::access::{fd, sv};
 use crate::datums::{self, Datums};
 use crate::kbensure;
-use crate::utils::WorkerState;
+use crate::utils::{ser, WorkerState};
 use anyhow::ensure;
 use nix::libc::off_t;
 use nix::sys::uio::pwrite;
@@ -90,10 +90,9 @@ impl L0Writer {
 
         self.blockbuf.clear();
         // let hdrsize = 8 /* total size */ + 4 /* rownum */ + 2 /* colnum */;
-        self.blockbuf.extend_from_slice(&0u64.to_ne_bytes());
-        self.blockbuf.extend_from_slice(&self.rownum.to_ne_bytes());
-        self.blockbuf
-            .extend(&(self.rel.attrs.len() as u16).to_ne_bytes());
+        ser::ser_u64(&mut self.blockbuf, 0);
+        ser::ser_u32(&mut self.blockbuf, self.rownum);
+        ser::ser_u16(&mut self.blockbuf, self.rel.attrs.len() as u16);
         datums::ser(
             &mut self.blockbuf,
             &self.rel,
@@ -102,10 +101,9 @@ impl L0Writer {
             &self.rows,
         );
         let totalsize = (self.blockbuf.len() + size_of::<u32>()) as u64;
-        let totalsizearea = &mut self.blockbuf.as_mut_slice()[..size_of::<u64>()];
-        totalsizearea.copy_from_slice(&totalsize.to_ne_bytes());
+        ser::ser_u64_at(&mut self.blockbuf, 0, totalsize);
         let crc = crc32c::crc32c(&self.blockbuf);
-        self.blockbuf.extend_from_slice(&crc.to_ne_bytes());
+        ser::ser_u32(&mut self.blockbuf, crc);
 
         let off = self.meta.len as off_t;
         let wn = fd::use_file(&self.path, |l0file| -> anyhow::Result<usize> {

@@ -100,14 +100,24 @@ fn get_opers(
 ) -> anyhow::Result<Vec<FormOperator>> {
     let mut oprs = Vec::new();
     let oprleftval: u32 = oprleft.into();
-    state.metaconn.iterate(format!("select oid, oprnamespace, oprresult, oprcode from kb_operator where oprname='{}' and oprleft={} and oprright={}", oprname, oprleftval, oprright), |row| {
+    let sql = format!(
+        "select oid, oprnamespace, oprresult, oprcode from kb_operator where oprname='{}' and oprleft={} and oprright={}",
+        oprname,
+        oprleftval,
+        oprright
+    );
+    state.metaconn.iterate(sql, |row| {
         oprs.push(FormOperator {
             oid: column_val(row, "oid").unwrap().parse().unwrap(),
             oprnamespace: column_val(row, "oprnamespace").unwrap().parse().unwrap(),
             oprleft: oprleft,
             oprright: oprright,
             oprresult: column_val(row, "oprresult").unwrap().parse().unwrap(),
-            oprcode: column_val(row, "oprcode").unwrap().parse::<u32>().unwrap().into(),
+            oprcode: column_val(row, "oprcode")
+                .unwrap()
+                .parse::<u32>()
+                .unwrap()
+                .into(),
         });
         true
     })?;

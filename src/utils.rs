@@ -45,6 +45,7 @@ pub mod err;
 pub mod fmgr;
 pub mod marc;
 pub mod sb;
+pub mod ser;
 
 pub struct WorkerState {
     pub wal: Option<&'static wal::GlobalStateExt>,
@@ -212,18 +213,28 @@ impl SessionState {
         args_gene: impl Fn(usize) -> Args,
         body: impl FnOnce(Args, &mut WorkerState) -> Ret + Send + 'static + Clone,
     ) -> Receiver<(WorkerExit, Ret)> {
+        debug_assert!(parallel > 0);
         self.resize_pool(parallel);
         let (send, receiver) = unbounded::<(WorkerExit, Ret)>();
-        for idx in 0..parallel {
+        let lastno = parallel - 1;
+        for idx in 0..lastno {
             let args = args_gene(idx);
             let mut worker = self.new_worker();
             let body2 = body.clone();
             let send2 = send.clone();
             self.pool().execute(move || {
+                worker.init_thread_locals();
                 let ret = body2(args, &mut worker);
                 send2.send((worker.exit(), ret)).unwrap();
             });
         }
+        let args = args_gene(lastno);
+        let mut worker = self.new_worker();
+        self.pool().execute(move || {
+            worker.init_thread_locals();
+            let ret = body(args, &mut worker);
+            send.send((worker.exit(), ret)).unwrap();
+        });
         return receiver;
     }
 }

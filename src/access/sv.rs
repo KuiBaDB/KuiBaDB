@@ -13,10 +13,10 @@ use crate::access::wal::{self, Lsn, RmgrId};
 use crate::access::xact::SessionExt as xactSessionExt;
 use crate::utils::marc::{Destory, Marc};
 use crate::utils::sb::{self, SharedBuffer};
-use crate::utils::{persist, SessionState};
+use crate::utils::{persist, ser, SessionState};
 use crate::{FileId, Oid};
 use anyhow::ensure;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{NativeEndian, ReadBytesExt};
 use std::fs::{self, OpenOptions};
 use std::io::{Cursor, Seek, SeekFrom};
 use std::mem::{self, size_of, size_of_val};
@@ -206,12 +206,12 @@ fn read_level_files<T>(
     cursor: &mut Cursor<&[u8]>,
     mut on_file: impl FnMut(u32, u64, u32) -> T,
 ) -> anyhow::Result<Vec<T>> {
-    let numl0 = cursor.read_u32::<LittleEndian>()?;
+    let numl0 = cursor.read_u32::<NativeEndian>()?;
     let mut l0files = Vec::with_capacity(numl0 as usize);
     for _i in 0..numl0 {
-        let fileid = cursor.read_u32::<LittleEndian>()?;
-        let filelen = cursor.read_u64::<LittleEndian>()?;
-        let rownum = cursor.read_u32::<LittleEndian>()?;
+        let fileid = cursor.read_u32::<NativeEndian>()?;
+        let filelen = cursor.read_u64::<NativeEndian>()?;
+        let rownum = cursor.read_u32::<NativeEndian>()?;
         l0files.push(on_file(fileid, filelen, rownum));
     }
     return Ok(l0files);
@@ -232,7 +232,7 @@ fn read_manifest(path: &str, enable_cs_wal: bool) -> anyhow::Result<SupVer> {
 
     let mut cursor = Cursor::new(mdata);
     cursor.seek(SeekFrom::Start(crcidx as u64))?;
-    let actual_crc = cursor.read_u32::<LittleEndian>()?;
+    let actual_crc = cursor.read_u32::<NativeEndian>()?;
     ensure!(
         actual_crc == expect_crc,
         "read_manifest failed. path={} expect_crc={} actual_crc={}",
@@ -242,7 +242,7 @@ fn read_manifest(path: &str, enable_cs_wal: bool) -> anyhow::Result<SupVer> {
     );
 
     cursor.seek(SeekFrom::Start(0))?;
-    let ver = cursor.read_u32::<LittleEndian>()?;
+    let ver = cursor.read_u32::<NativeEndian>()?;
     ensure!(
         ver == MANIFEST_VER,
         "read_manifest failed. path={} expect_ver={} actual_ver={}",
@@ -251,7 +251,7 @@ fn read_manifest(path: &str, enable_cs_wal: bool) -> anyhow::Result<SupVer> {
         ver
     );
 
-    let lsn = Lsn::new(cursor.read_u64::<LittleEndian>()?);
+    let lsn = Lsn::new(cursor.read_u64::<NativeEndian>()?);
 
     let mut newestid = 0u32;
     let l0files = read_level_files(&mut cursor, |fileid, filelen, rownum| {
@@ -297,39 +297,39 @@ fn read_manifest(path: &str, enable_cs_wal: bool) -> anyhow::Result<SupVer> {
 
 fn write_level_files<T>(
     files: &Vec<T>,
-    cursor: &mut Cursor<Vec<u8>>,
+    out: &mut Vec<u8>,
     on_file: impl Fn(&T) -> (u32, u64, u32),
-) -> anyhow::Result<()> {
-    cursor.write_u32::<LittleEndian>(files.len() as u32)?;
+) {
+    ser::ser_u32(out, files.len() as u32);
     for file in files {
         let (fileid, filelen, rownum) = on_file(file);
-        cursor.write_u32::<LittleEndian>(fileid)?;
-        cursor.write_u64::<LittleEndian>(filelen)?;
-        cursor.write_u32::<LittleEndian>(rownum)?;
+        ser::ser_u32(out, fileid);
+        ser::ser_u64(out, filelen);
+        ser::ser_u32(out, rownum);
     }
-    return Ok(());
+    return;
 }
 
 fn write_manifest(path: &str, sv: &SupVer) -> anyhow::Result<()> {
-    let mut cursor = Cursor::new(Vec::new());
-    cursor.write_u32::<LittleEndian>(MANIFEST_VER)?;
+    let mut data = Vec::new();
+    ser::ser_u32(&mut data, MANIFEST_VER);
     let lsn = match sv.lsn {
         Some(v) => v.get(),
         None => 0,
     };
-    cursor.write_u64::<LittleEndian>(lsn)?;
+    ser::ser_u64(&mut data, lsn);
 
-    write_level_files(&sv.l0, &mut cursor, |file: &L0File| {
+    write_level_files(&sv.l0, &mut data, |file: &L0File| {
         (file.meta.fileid.get(), file.meta.len, file.meta.rownum)
-    })?;
+    });
     let on_file = |file: &Marc<ImmFile>| (file.fileid.get(), file.len, file.rownum);
-    write_level_files(&sv.l1, &mut cursor, on_file)?;
-    write_level_files(&sv.l2, &mut cursor, on_file)?;
+    write_level_files(&sv.l1, &mut data, on_file);
+    write_level_files(&sv.l2, &mut data, on_file);
 
-    let crc = crc32c::crc32c(cursor.get_ref());
-    cursor.write_u32::<LittleEndian>(crc)?;
+    let crc = crc32c::crc32c(&data);
+    ser::ser_u32(&mut data, crc);
 
-    return persist(path, cursor.get_ref());
+    return persist(path, &data);
 }
 
 pub struct SVCommonData {
@@ -425,26 +425,19 @@ struct CreateL0File {
 }
 
 const UPDATE_L0FILE: u8 = 1;
-fn do_ser_update_l0file(
-    out: &mut Vec<u8>,
-    table: TableId,
-    files: &[FileMeta],
-) -> anyhow::Result<()> {
-    let idx = out.len();
-    let mut cursor = Cursor::new(out);
-    cursor.set_position(idx as u64);
-    cursor.write_u32::<LittleEndian>(table.db.get())?;
-    cursor.write_u32::<LittleEndian>(table.table.get())?;
+fn do_ser_update_l0file(out: &mut Vec<u8>, table: TableId, files: &[FileMeta]) {
+    ser::ser_u32(out, table.db.get());
+    ser::ser_u32(out, table.table.get());
     for file in files {
-        cursor.write_u32::<LittleEndian>(file.fileid.get())?;
-        cursor.write_u32::<LittleEndian>(file.rownum)?;
-        cursor.write_u64::<LittleEndian>(file.len)?;
+        ser::ser_u32(out, file.fileid.get());
+        ser::ser_u32(out, file.rownum);
+        ser::ser_u64(out, file.len);
     }
-    return Ok(());
+    return;
 }
 
 fn ser_update_l0file(out: &mut Vec<u8>, table: TableId, files: &[FileMeta]) {
-    do_ser_update_l0file(out, table, files).unwrap();
+    do_ser_update_l0file(out, table, files);
 }
 
 fn insert_create_l0file_wal(
