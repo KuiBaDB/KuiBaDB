@@ -12,7 +12,7 @@ use crate::access::redo::RedoState;
 use crate::guc::{self, GucState};
 use crate::utils::{persist, pwritevn, ser::as_bytes, KBSystemTime, Xid};
 use crate::{make_static, Oid};
-use anyhow::anyhow;
+use anyhow::{anyhow, ensure};
 use log;
 use memoffset::offset_of;
 use nix::libc::off_t;
@@ -129,29 +129,25 @@ impl CtlSer {
     fn load() -> anyhow::Result<CtlSer> {
         let mut d = Vec::with_capacity(CTLLEN);
         File::open(CONTROL_FILE)?.read_to_end(&mut d)?;
-        if d.len() != CTLLEN {
-            Err(anyhow!("load: invalid control file. len={}", d.len()))
-        } else {
-            let ctl = unsafe { std::ptr::read(d.as_ptr() as *const CtlSer) };
-            if ctl.ctlver != KB_CTL_VER {
-                let v = ctl.ctlver;
-                return Err(anyhow!("load: unexpected ctlver={}", v));
-            }
-            if ctl.catver != KB_CAT_VER {
-                let v = ctl.catver;
-                return Err(anyhow!("load: unexpected catver={}", v));
-            }
-            let v1 = ctl.cal_crc32c();
-            if ctl.crc32c != v1 {
-                let v = ctl.crc32c;
-                return Err(anyhow!(
-                    "load: unexpected crc32c. actual={} expected={}",
-                    v,
-                    v1
-                ));
-            }
-            Ok(ctl)
-        }
+        ensure!(
+            d.len() == CTLLEN,
+            "load: invalid control file. len={}",
+            d.len()
+        );
+        let ctl = unsafe { std::ptr::read(d.as_ptr() as *const CtlSer) };
+        let v = ctl.ctlver;
+        ensure!(v == KB_CTL_VER, "load: unexpected ctlver={}", v);
+        let v = ctl.catver;
+        ensure!(v == KB_CAT_VER, "load: unexpected catver={}", v);
+        let v1 = ctl.cal_crc32c();
+        let v = ctl.crc32c;
+        ensure!(
+            v == v1,
+            "load: unexpected crc32c. actual={} expected={}",
+            v,
+            v1
+        );
+        Ok(ctl)
     }
 }
 impl Ctl {
@@ -447,36 +443,62 @@ impl WalReader {
         let file = self.file.as_ref().unwrap();
         let mut hdrbytes = [0; RECHDRLEN];
         let hdrlen = file.pread(&mut hdrbytes, recoff)?;
-        if hdrlen != RECHDRLEN {
-            return Err(anyhow!("WalReader::read_record: cannot read RecordHdr. readlen={} filetli={} filelsn={} filelen={} recoff={}",
-                hdrlen, file.tli(), file.lsn(), file.len(), recoff));
+        macro_rules! read_err {
+            ($err: expr, $($arg:tt)*) => {
+                anyhow!(
+                    concat!(
+                        "WalReader::read_record(filetli={} filelsn={} filelen={} recoff={}): ",
+                        $err
+                    ),
+                    file.tli(), file.lsn(), file.len(), recoff,
+                    $($arg)*
+                )
+            };
         }
+        macro_rules! read_ensure {
+            ($cond:expr, $err: expr, $($arg:tt)*) => {
+                if !$cond {
+                    return Err(read_err!($err, $($arg)*))
+                }
+            };
+        }
+        read_ensure!(
+            hdrlen == RECHDRLEN,
+            "cannot read RecordHdr. readlen={}",
+            hdrlen
+        );
         let rechdrser = hdr(&hdrbytes);
         let rechdr: RecordHdr = rechdrser.into();
         if let Some(prevlsn) = self.readlsn {
-            if let Some(recprevlsn) = rechdr.prev {
-                if prevlsn != recprevlsn {
-                    return Err(anyhow!("WalReader::read_record: unexpected prevlsn. expected={} actual={} filetli={} filelsn={} filelen={} recoff={}", prevlsn, recprevlsn, file.tli(), file.lsn(), file.len(), recoff));
-                }
-            } else {
-                return Err(anyhow!("WalReader::read_record: no prevlsn. expected={} filetli={} filelsn={} filelen={} recoff={}", prevlsn, file.tli(), file.lsn(), file.len(), recoff));
-            }
+            let recprevlsn = rechdr
+                .prev
+                .ok_or_else(|| read_err!("no prevlsn. expected={}", prevlsn))?;
+            read_ensure!(
+                recprevlsn == prevlsn,
+                "unexpected prevlsn. expected={} actual={}",
+                prevlsn,
+                recprevlsn
+            );
         }
         let recdatlen = rechdr.totlen as usize - RECHDRLEN;
         let mut databytes = Vec::<u8>::with_capacity(recdatlen);
         databytes.resize(recdatlen, 0); // there is no need to do the zeroing.
         let readlen = file.pread(&mut databytes, recoff + RECHDRLEN as u64)?;
-        if recdatlen != readlen {
-            return Err(anyhow!("WalReader::read_record: cannot read data. readlen={} reclen={} filetli={} filelsn={} filelen={} recoff={}",
-                readlen, recdatlen, file.tli(), file.lsn(), file.len(), recoff));
-        }
+        read_ensure!(
+            recdatlen == readlen,
+            "cannot read data. readlen={} reclen={}",
+            readlen,
+            recdatlen
+        );
         let crc = crc32c::crc32c(&databytes);
         let crc = crc32c::crc32c_append(crc, hdr_crc_area(&hdrbytes));
         let actual_crc = rechdrser.crc32c;
-        if actual_crc != crc {
-            return Err(anyhow!("WalReader::read_record: unexpected crc. expected={} actual={} filetli={} filelsn={} filelen={} recoff={}",
-                crc, actual_crc, file.tli(), file.lsn(), file.len(), recoff));
-        }
+        read_ensure!(
+            actual_crc == crc,
+            "unexpected crc. expected={} actual={}",
+            crc,
+            actual_crc
+        );
         self.readlsn = Some(self.endlsn);
         self.endlsn = Lsn::new(self.endlsn.get() + rechdr.totlen as u64).unwrap();
         Ok((rechdr, databytes))

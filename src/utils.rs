@@ -19,7 +19,7 @@ use crate::access::{ckpt, sv};
 use crate::access::{clog, wal, xact};
 use crate::catalog::namespace::SessionStateExt as NameSpaceSessionStateExt;
 use crate::Oid;
-use crate::{guc, protocol, GlobalState};
+use crate::{guc, kbensure, protocol, GlobalState, SockWriter};
 use anyhow::anyhow;
 use chrono::offset::Local;
 use chrono::DateTime;
@@ -30,12 +30,11 @@ use nix::unistd::SysconfVar::IOV_MAX;
 use std::alloc::Layout;
 use std::fs::File;
 use std::io::Write;
-use std::net::TcpStream;
 use std::num::NonZeroU16;
 use std::os::unix::io::RawFd;
 use std::path::Path;
 use std::ptr::NonNull;
-use std::sync::{atomic::AtomicBool, atomic::AtomicU32, Arc};
+use std::sync::{atomic::AtomicBool, atomic::AtomicU32, atomic::Ordering::Relaxed, Arc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::NamedTempFile;
 use threadpool::ThreadPool;
@@ -166,15 +165,13 @@ impl SessionState {
         }
     }
 
-    pub fn error(&self, code: &str, msg: &str, stream: &mut TcpStream) {
-        log::error!("{}", msg);
-        let loglvl = if self.dead { "FATAL" } else { "ERROR" };
-        protocol::write_message(stream, &protocol::ErrorResponse::new(loglvl, code, msg))
-    }
-
-    pub fn on_error(&self, err: &anyhow::Error, stream: &mut TcpStream) {
-        let errcode = err::errcode(err);
-        self.error(errcode, &format!("{:#}", err), stream);
+    pub fn on_error(&self, err: &anyhow::Error, stream: &mut SockWriter) {
+        let lvl = if self.dead {
+            protocol::SEVERITY_FATAL
+        } else {
+            protocol::SEVERITY_ERR
+        };
+        crate::on_error(lvl, err, stream);
     }
 
     pub fn update_stmt_startts(&mut self) {
@@ -236,6 +233,15 @@ impl SessionState {
             send.send((worker.exit(), ret)).unwrap();
         });
         return receiver;
+    }
+
+    pub fn check_termreq(&self) -> anyhow::Result<()> {
+        kbensure!(
+            !self.termreq.load(Relaxed),
+            ERRCODE_ADMIN_SHUTDOWN,
+            "terminating connection due to administrator command"
+        );
+        return Ok(());
     }
 }
 

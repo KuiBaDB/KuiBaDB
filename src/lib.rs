@@ -22,6 +22,7 @@ use std::cmp::Ordering as cmpord;
 use std::cmp::{max, min};
 use std::collections::HashMap;
 use std::debug_assert;
+use std::io::{BufReader, BufWriter, Write};
 use std::iter::Iterator;
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, Ordering::Relaxed};
@@ -249,27 +250,6 @@ impl Drop for SessionDroper<'_> {
     }
 }
 
-fn do_session_fatal(stream: &mut TcpStream, code: &str, msg: &str) {
-    log::error!("{}", msg);
-    let msg = protocol::ErrorResponse::new("FATAL", code, msg);
-    protocol::write_message(stream, &msg);
-}
-
-macro_rules! session_fatal {
-    ($stream: expr, $code: ident, $fmt: expr, $($arg:tt)*) => {
-        let ___session_fatal_errmsg = format!($fmt, $($arg)*);
-        do_session_fatal($stream, $crate::protocol::$code, &___session_fatal_errmsg);
-    };
-    ($stream: expr, $code: expr, $fmt: expr, $($arg:tt)*) => {
-        let ___session_fatal_errmsg = format!($fmt, $($arg)*);
-        do_session_fatal($stream, $code, &___session_fatal_errmsg);
-    };
-    ($stream: expr, $code: ident, $fmt: expr) => {
-        let ___session_fatal_errmsg = format!($fmt);
-        do_session_fatal($stream, $crate::protocol::$code, &___session_fatal_errmsg);
-    };
-}
-
 fn handle_cancel_request(cancelmap: &Mutex<CancelMap>, cancel_req: protocol::CancelRequest) {
     log::info!("Receive cancel request. req={:?}", cancel_req);
     let mut done = "done";
@@ -291,145 +271,124 @@ fn handle_cancel_request(cancelmap: &Mutex<CancelMap>, cancel_req: protocol::Can
     log::info!("execute cancel request. done={}", done);
 }
 
-pub fn postgres_main(global_state: GlobalState, mut streamv: TcpStream, sessid: u32) {
-    let stream = &mut streamv;
+type SockReader<'a> = BufReader<&'a TcpStream>;
+type SockWriter<'a> = BufWriter<&'a TcpStream>;
+
+fn on_error(level: &str, err: &anyhow::Error, writer: &mut SockWriter) {
+    let ec = errcode(err);
+    let msg = format!("{:#}", err);
+    log::error!("msglvl={} code={} {}", level, ec, &msg);
+    // ignore error, just as send_message_to_frontend().
+    protocol::write_message(writer, &protocol::ErrorResponse::new(level, ec, &msg));
+    let _ = writer.flush();
+    return;
+}
+
+const NOSSL: [u8; 1] = ['N' as u8];
+
+fn do_postgres_main(
+    global_state: GlobalState,
+    sockreader: &mut SockReader<'_>,
+    sockwriter: &mut SockWriter<'_>,
+    sessid: u32,
+) -> anyhow::Result<()> {
     log::info!(
         "receive connection. sessid={} remote={}",
         sessid,
-        stream
+        sockwriter
+            .get_ref()
             .peer_addr()
             .map_or("UNKNOWN ADDR".to_string(), |v| v.to_string())
     );
-
-    let startup_msgdata: Vec<u8>;
-    let startup_msg = match protocol::read_startup_message(stream) {
-        Err(err) => {
-            panic!("read_message failed. err={}", err);
-        }
-        Ok(msgdata) => match protocol::CancelRequest::deserialize(&msgdata) {
-            Some(cancel_req) => {
-                handle_cancel_request(&global_state.cancelmap, cancel_req);
-                return;
-            }
-            None => match protocol::handle_ssl_request(stream, msgdata) {
-                Err(err) => {
-                    panic!("read_message failed. err={}", err);
-                }
-                Ok(msgdata) => {
-                    startup_msgdata = msgdata;
-                    match protocol::StartupMessage::deserialize(&startup_msgdata) {
-                        Err(err) => {
-                            session_fatal!(
-                                stream,
-                                ERRCODE_PROTOCOL_VIOLATION,
-                                "unexpected startup msg. err={:?}",
-                                err
-                            );
-                            return;
-                        }
-                        Ok(v) => v,
-                    }
-                }
-            },
-        },
-    };
-    log::info!("receive startup message. msg={:?}", &startup_msg);
-
-    // validate
-    let expected_client_encoding = guc::get_str(&global_state.gucstate, guc::ClientEncoding);
-    if !startup_msg.check_client_encoding(expected_client_encoding) {
-        session_fatal!(
-            stream,
-            ERRCODE_PROTOCOL_VIOLATION,
-            "Unsupported client encoding. expected={}",
-            expected_client_encoding
-        );
-        return;
+    let mut msg = Vec::new();
+    protocol::read_startup_message(sockreader, &mut msg)?;
+    if let Some(req) = protocol::CancelRequest::deserialize(&msg) {
+        handle_cancel_request(&global_state.cancelmap, req);
+        return Ok(());
     }
-
+    if let Some(_) = protocol::SSLRequest::deserialize(&msg) {
+        sockwriter.write_all(&NOSSL)?;
+        sockwriter.flush()?;
+        protocol::read_startup_message(sockreader, &mut msg)?;
+    }
+    let startup = protocol::StartupMessage::deserialize(&msg).with_context(|| {
+        errctx!(
+            ERRCODE_PROTOCOL_VIOLATION,
+            "unexpected startup msg. msg={:?}",
+            msg
+        )
+    })?;
+    log::info!("receive startup message. msg={:?}", &startup);
+    let expected_client_encoding = guc::get_str(&global_state.gucstate, guc::ClientEncoding);
+    // validate
+    kbensure!(
+        startup.check_client_encoding(expected_client_encoding),
+        ERRCODE_PROTOCOL_VIOLATION,
+        "Unsupported client encoding. expected={}",
+        expected_client_encoding
+    );
     // post-validate
     let sesskey = rand::random();
     let termreq = insert_cancel_map(&global_state.cancelmap, sessid, sesskey);
     let _droper = SessionDroper::new(&global_state.cancelmap, sessid);
-    let mut state = match global_state.new_session(&startup_msg.database(), sessid, termreq) {
-        Err(err) => {
-            session_fatal!(stream, errcode(&err), "{:#}", err);
-            return;
-        }
-        Ok(state) => state,
-    };
+    let mut state = global_state.new_session(&startup.database(), sessid, termreq)?;
     log::info!("connect database. dboid={}", state.reqdb);
-
     // post-validate for client-side
-    protocol::write_message(stream, &protocol::AuthenticationOk {});
-    protocol::report_all_gucs(&state.gucstate, stream);
-    protocol::write_message(stream, &protocol::BackendKeyData::new(sessid, sesskey));
-    macro_rules! check_termreq {
-        () => {
-            if state.termreq.load(Ordering::Relaxed) {
-                session_fatal!(
-                    stream,
-                    ERRCODE_ADMIN_SHUTDOWN,
-                    "terminating connection due to administrator command"
-                );
-                return;
-            }
-        };
-    }
-
+    protocol::write_message(sockwriter, &protocol::AuthenticationOk {});
+    protocol::report_all_gucs(&state.gucstate, sockwriter);
+    protocol::write_message(sockwriter, &protocol::BackendKeyData::new(sessid, sesskey));
     state.init_thread_locals();
-
     loop {
-        check_termreq!();
-        protocol::write_message(stream, &protocol::ReadyForQuery::new(state.xact_status()));
-        let (msgtype, msgdata) = match protocol::read_message(stream) {
-            Err(err) => {
-                session_fatal!(
-                    stream,
-                    ERRCODE_CONNECTION_FAILURE,
-                    "read_message failed. err={}",
-                    err
-                );
-                return;
-            }
-            Ok(v) => v,
-        };
-        check_termreq!();
+        state.check_termreq()?;
+        protocol::write_message(
+            sockwriter,
+            &protocol::ReadyForQuery::new(state.xact_status()),
+        );
+        sockwriter.flush()?;
+        let (msgtype, msgdata) = protocol::read_message(sockreader)
+            .with_context(|| errctx!(ERRCODE_CONNECTION_FAILURE, "read_message failed"))?;
+        state.check_termreq()?;
         if msgtype == protocol::MsgType::EOF as i8 || msgtype == protocol::MsgType::Terminate as i8
         {
             log::info!("end connection");
-            return;
+            return Ok(());
         }
-        if msgtype != protocol::MsgType::Query as i8 {
-            session_fatal!(
-                stream,
-                ERRCODE_PROTOCOL_VIOLATION,
-                "unexpected msg. expected=Q actual={}",
-                msgtype
-            );
-            return;
-        }
+        kbensure!(
+            msgtype == protocol::MsgType::Query as i8,
+            ERRCODE_PROTOCOL_VIOLATION,
+            "unexpected msg. expected=Q actual={}",
+            msgtype
+        );
         state.update_stmt_startts();
-        let query = match protocol::Query::deserialize(&msgdata) {
-            Err(err) => {
-                session_fatal!(
-                    stream,
-                    ERRCODE_PROTOCOL_VIOLATION,
-                    "unexpected query msg. err={:?}",
-                    err
-                );
-                return;
-            }
-            Ok(query) => query,
-        };
-        exec_simple_query(query.query, &mut state, stream);
+        let query = protocol::Query::deserialize(&msgdata).with_context(|| {
+            errctx!(
+                ERRCODE_PROTOCOL_VIOLATION,
+                "unexpected query msg. msg={:?}",
+                msgdata
+            )
+        })?;
+        exec_simple_query(query.query, &mut state, sockwriter);
         if state.dead {
-            return;
+            return Ok(());
         }
     }
 }
 
-fn write_str_response(resp: &utility::StrResp, stream: &mut TcpStream) {
+const SOCK_SEND_BUF_SIZE: usize = 8192;
+const SOCK_RECV_BUF_SIZE: usize = 8192;
+
+pub fn postgres_main(global_state: GlobalState, streamv: TcpStream, sessid: u32) {
+    let mut sockreader = BufReader::with_capacity(SOCK_RECV_BUF_SIZE, &streamv);
+    let mut sockwriter = BufWriter::with_capacity(SOCK_SEND_BUF_SIZE, &streamv);
+    let res = do_postgres_main(global_state, &mut sockreader, &mut sockwriter, sessid);
+    if let Err(err) = res {
+        on_error(protocol::SEVERITY_FATAL, &err, &mut sockwriter);
+    }
+    let _ = sockwriter.flush(); // ignore error, just as ReadyForQuery
+    return;
+}
+
+fn write_str_response(resp: &utility::StrResp, stream: &mut SockWriter) {
     protocol::write_message(
         stream,
         &protocol::RowDescription {
@@ -449,14 +408,14 @@ fn write_str_response(resp: &utility::StrResp, stream: &mut TcpStream) {
     );
 }
 
-fn write_cmd_complete(tag: &str, stream: &mut TcpStream) {
+fn write_cmd_complete(tag: &str, stream: &mut SockWriter) {
     protocol::write_message(stream, &protocol::CommandComplete { tag });
 }
 
 fn exec_utility(
     stmt: &parser::sem::UtilityStmt,
     session: &mut SessionState,
-    stream: &mut TcpStream,
+    stream: &mut SockWriter,
 ) -> anyhow::Result<String> {
     let resp = utility::process_utility(stmt, session)?;
     if let Some(ref strresp) = resp.resp {
@@ -468,10 +427,10 @@ fn exec_utility(
 fn exec_optimizable(
     stmt: &parser::sem::Query,
     session: &mut SessionState,
-    stream: &mut TcpStream,
+    stream: &mut SockWriter,
 ) -> anyhow::Result<String> {
     let plannedstmt = optimizer::planner(session, stmt)?;
-    let mut dest_remote = access::DestRemote::new(session, stream);
+    let mut dest_remote = access::DestRemote::new(stream);
     executor::exec_select(&plannedstmt, session, &mut dest_remote)?;
     return Ok(format!("SELECT {}", dest_remote.processed));
 }
@@ -479,7 +438,7 @@ fn exec_optimizable(
 fn do_exec_simple_query(
     query: &str,
     session: &mut SessionState,
-    stream: &mut TcpStream,
+    stream: &mut SockWriter,
 ) -> anyhow::Result<()> {
     // We dont want a multi-line log.
     log::info!("receive query. {}", query /* .replace("\n", " ") */);
@@ -506,7 +465,7 @@ fn do_exec_simple_query(
     return Ok(());
 }
 
-fn exec_simple_query(query: &str, session: &mut SessionState, stream: &mut TcpStream) {
+fn exec_simple_query(query: &str, session: &mut SessionState, stream: &mut SockWriter) {
     if let Err(ref err) = do_exec_simple_query(query, session, stream) {
         session.on_error(err, stream);
         session.abort_cur_tran().unwrap();
@@ -585,10 +544,9 @@ impl GlobalState {
     }
 
     fn init(datadir: &str) -> GlobalState {
-        let mut gucstate = Arc::<guc::GucState>::default();
         std::env::set_current_dir(datadir).unwrap();
-        guc::load_apply_gucs("kuiba.conf", Arc::make_mut(&mut gucstate)).unwrap();
-        GlobalState::new(gucstate)
+        let gucstate = guc::load("kuiba.conf").unwrap();
+        GlobalState::new(Arc::new(gucstate))
     }
 
     fn new_session(

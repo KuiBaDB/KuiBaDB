@@ -950,9 +950,7 @@ fn main() {
     std::fs::write("kuiba.conf", format!("# define your GUC here.\n")).unwrap();
     std::fs::create_dir_all("kb_wal").unwrap();
     std::fs::create_dir_all("kb_xact").unwrap();
-    let mut gucstate = guc::GucState::default();
-    guc::load_apply_gucs("kuiba.conf", &mut gucstate).unwrap();
-    let gucstate = gucstate;
+    let gucstate = guc::load("kuiba.conf").unwrap();
     log::info!("create global metadata");
     create_global_metadata();
     log::info!("create template0 metadata");

@@ -11,32 +11,35 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 use crate::utils::ser;
+use crate::{errctx, kbanyhow, kbensure, Oid, OptOid, SockReader, SockWriter};
 use crate::{guc, AttrNumber};
-use crate::{Oid, OptOid};
+use anyhow::Context;
 use byteorder::{NetworkEndian, ReadBytesExt};
 use std::collections::HashMap;
-use std::io::{Cursor, ErrorKind, Read, Write};
-use std::net::TcpStream;
+use std::convert::TryInto;
+use std::io::{Cursor, Read, Write};
+use std::mem::size_of;
+use std::str::from_utf8;
 
 mod errcodes;
 pub use errcodes::*;
 
-fn read_body(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
+fn read_body(stream: &mut SockReader, content: &mut Vec<u8>) -> std::io::Result<()> {
     let len = stream.read_u32::<NetworkEndian>()?;
-    let mut content = Vec::<u8>::new();
-    content.resize(len as usize - std::mem::size_of::<u32>(), 0);
+    content.resize(len as usize - size_of::<u32>(), 0);
     stream.read_exact(content.as_mut_slice())?;
-    Ok(content)
+    return Ok(());
 }
 
-pub fn read_message(stream: &mut TcpStream) -> std::io::Result<(i8, Vec<u8>)> {
+pub fn read_message(stream: &mut SockReader) -> std::io::Result<(i8, Vec<u8>)> {
+    let mut content = Vec::new();
     let msgtype = stream.read_i8()?;
-    let content = read_body(stream)?;
+    read_body(stream, &mut content)?;
     Ok((msgtype, content))
 }
 
-pub fn read_startup_message(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
-    read_body(stream)
+pub fn read_startup_message(stream: &mut SockReader, content: &mut Vec<u8>) -> std::io::Result<()> {
+    read_body(stream, content)
 }
 
 #[derive(Debug)]
@@ -50,9 +53,9 @@ impl CancelRequest {
         if d.len() != 12 || d[..4] != [0x04, 0xd2, 0x16, 0x2e] {
             None
         } else {
-            let mut cursor = Cursor::new(&d[4..]);
-            let sess = cursor.read_u32::<NetworkEndian>().unwrap();
-            let key = cursor.read_u32::<NetworkEndian>().unwrap();
+            // All unwrap will be erased at release build.
+            let sess = u32::from_be_bytes(d[4..8].try_into().unwrap());
+            let key = u32::from_be_bytes(d[8..12].try_into().unwrap());
             Some(CancelRequest { sess, key })
         }
     }
@@ -70,18 +73,6 @@ impl SSLRequest {
     }
 }
 
-const NOSSL: [u8; 1] = ['N' as u8];
-
-pub fn handle_ssl_request(stream: &mut TcpStream, msg: Vec<u8>) -> std::io::Result<Vec<u8>> {
-    match SSLRequest::deserialize(&msg) {
-        Some(_) => {
-            stream.write(&NOSSL)?;
-            read_startup_message(stream)
-        }
-        None => Ok(msg),
-    }
-}
-
 #[repr(i8)]
 pub enum MsgType {
     Query = 'Q' as i8,
@@ -89,7 +80,8 @@ pub enum MsgType {
     EOF = -1,
 }
 
-pub fn write_message<T: Message>(stream: &mut TcpStream, msg: &T) {
+pub fn write_message<T: Message>(stream: &mut SockWriter, msg: &T) {
+    // ignore error, just as PostgreSQL.
     let _ = stream.write_all(&msg.serialize());
 }
 
@@ -105,6 +97,7 @@ const STARTUP_CLIENT_ENCODING: &str = "client_encoding";
 pub struct StartupMessage<'a> {
     pub major_ver: u16,
     pub minor_ver: u16,
+    username: &'a str,
     pub params: HashMap<&'a str, &'a str>,
 }
 
@@ -117,54 +110,53 @@ fn find(d: &[u8], start: usize, val: u8) -> i64 {
     -1
 }
 
-fn read_cstr<'a>(cursor: &mut Cursor<&'a [u8]>) -> std::io::Result<&'a str> {
+fn read_cstr<'a>(cursor: &mut Cursor<&'a [u8]>) -> anyhow::Result<&'a str> {
     let data = cursor.get_ref();
     let idx = find(data, cursor.position() as usize, 0);
-    if idx < 0 {
-        return Err(std::io::Error::new(ErrorKind::UnexpectedEof, "onho"));
-    }
+    kbensure!(
+        idx >= 0,
+        ERRCODE_PROTOCOL_VIOLATION,
+        "invalid string in message"
+    );
     let cstrdata = &data[cursor.position() as usize..idx as usize];
-    if !cstrdata.is_ascii() {
-        return Err(std::io::Error::new(ErrorKind::InvalidData, "onho"));
-    }
-    let retstr = match std::str::from_utf8(cstrdata) {
-        Err(err) => return Err(std::io::Error::new(ErrorKind::InvalidData, err)),
-        Ok(v) => v,
-    };
+    let retstr = from_utf8(cstrdata).with_context(|| {
+        errctx!(
+            ERRCODE_PROTOCOL_VIOLATION,
+            "invalid UTF-8 string in message"
+        )
+    })?;
     cursor.set_position(idx as u64 + 1);
     Ok(retstr)
 }
 
 impl StartupMessage<'_> {
-    pub fn deserialize(d: &[u8]) -> std::io::Result<StartupMessage<'_>> {
+    pub fn deserialize(d: &[u8]) -> anyhow::Result<StartupMessage<'_>> {
         //log::trace!("StartupMessage deserialize. d={:?}", d);
         let mut cursor = Cursor::new(d);
         let major_ver = cursor.read_u16::<NetworkEndian>()?;
         let minor_ver = cursor.read_u16::<NetworkEndian>()?;
-        let mut startup_msg = StartupMessage {
-            major_ver,
-            minor_ver,
-            params: HashMap::new(),
-        };
-
+        let mut params = HashMap::new();
         loop {
             let name = read_cstr(&mut cursor)?;
             if name.is_empty() {
                 break;
             }
             let val = read_cstr(&mut cursor)?;
-            startup_msg.params.insert(name, val);
+            params.insert(name, val);
         }
-
-        if !startup_msg.params.contains_key(&STARTUP_USER_PARAM) {
-            Err(std::io::Error::new(ErrorKind::InvalidData, "no user key"))
-        } else {
-            Ok(startup_msg)
-        }
+        let user = params
+            .get(&STARTUP_USER_PARAM)
+            .ok_or_else(|| kbanyhow!(ERRCODE_PROTOCOL_VIOLATION, "StartupMessage: no user key"))?;
+        return Ok(StartupMessage {
+            major_ver,
+            minor_ver,
+            username: user,
+            params,
+        });
     }
 
     pub fn user(&self) -> &str {
-        *self.params.get(&STARTUP_USER_PARAM).unwrap()
+        self.username
     }
 
     pub fn database(&self) -> &str {
@@ -238,6 +230,9 @@ fn serialize_errmsg(typ: u8, fields: &ErrFields) -> Vec<u8> {
     ser::ser_be_u32_at(&mut out, 1, msglen as u32);
     return out;
 }
+
+pub const SEVERITY_ERR: &str = "ERROR";
+pub const SEVERITY_FATAL: &str = "FATAL";
 
 pub struct ErrorResponse<'a> {
     pub fields: ErrFields<'a>,
@@ -334,18 +329,15 @@ pub struct Query<'a> {
 }
 
 impl Query<'_> {
-    pub fn deserialize(d: &[u8]) -> std::io::Result<Query<'_>> {
-        if d.is_empty() {
-            return Err(std::io::Error::new(ErrorKind::InvalidData, "invalid Query"));
-        }
-        if let Ok(query) = std::str::from_utf8(&d[..d.len() - 1]) {
-            Ok(Query { query })
-        } else {
-            Err(std::io::Error::new(
-                ErrorKind::InvalidData,
-                "from_utf8 failed",
-            ))
-        }
+    pub fn deserialize(d: &[u8]) -> anyhow::Result<Query<'_>> {
+        kbensure!(
+            !d.is_empty(),
+            ERRCODE_PROTOCOL_VIOLATION,
+            "Query string is empty"
+        );
+        let qstr = from_utf8(&d[..d.len() - 1])
+            .with_context(|| errctx!(ERRCODE_PROTOCOL_VIOLATION, "Query string is not UTF-8"))?;
+        return Ok(Query { query: qstr });
     }
 }
 
@@ -391,7 +383,7 @@ pub fn report_guc(
     name: &str,
     gucvals: &guc::GucState,
     gucidx: guc::GucIdx,
-    stream: &mut TcpStream,
+    stream: &mut SockWriter,
 ) {
     let gen = guc::get_guc_generic(gucidx);
     if !gen.should_report() {
@@ -400,10 +392,10 @@ pub fn report_guc(
     let value = guc::show(gen, gucvals, gucidx);
     log::trace!("report guc. name={} value={}", name, value);
     let msg = ParameterStatus::new(name, &value);
-    write_message(stream, &msg)
+    write_message(stream, &msg);
 }
 
-pub fn report_all_gucs(gucvals: &guc::GucState, stream: &mut TcpStream) {
+pub fn report_all_gucs(gucvals: &guc::GucState, stream: &mut SockWriter) {
     for (&name, &gucidx) in guc::GUC_NAMEINFO_MAP.iter() {
         report_guc(name, gucvals, gucidx, stream)
     }

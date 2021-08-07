@@ -18,6 +18,7 @@ pub use gucdef::R::*;
 pub use gucdef::S::*;
 pub use gucdef::{GucIdx, GucVals, BOOL_GUCS, GUC_NAMEINFO_MAP, INT_GUCS, REAL_GUCS, STR_GUCS};
 use log;
+use yaml_rust::Yaml;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd)]
 enum Context {
@@ -192,74 +193,50 @@ pub fn set_bool_guc(idx: gucdef::B, val: bool, gucstate: &mut GucState) {
     apply_bool_guc(idx as usize, val, gucstate, Source::SET);
 }
 
-fn load_gucs(input: &str) -> anyhow::Result<GucVals> {
-    let mut gucvals = GucVals::default();
-    let yamldata = common::load_yaml(input)?;
-    if yamldata.is_empty() {
-        return Ok(gucvals);
+fn load_guc(gucstate: &mut GucState, guckey: &str, gucval: &Yaml) {
+    macro_rules! apply_guc {
+        ($yamlto: ident, $apply: ident, $idx: expr) => {
+            if let Some(val) = common::$yamlto(gucval) {
+                $apply($idx as usize, val, gucstate, Source::FILE);
+            } else {
+                log::warn!(
+                    "invalid guc val. expected={}, guckey={:?} gucval={:?}",
+                    stringify!(yamlto),
+                    guckey,
+                    gucval
+                );
+            }
+        };
     }
-    let yamldoc = &yamldata[0];
-    let yamlhash = yamldoc
-        .as_hash()
-        .ok_or(anyhow::anyhow!("Unknown yaml. yamldata={:?}", yamldata))?;
-    for (gucname, gucstr) in yamlhash {
-        let guckey = common::yaml_try_tostr(gucname);
-        if guckey.is_none() {
-            log::warn!(
-                "Unknown gucname. yaml_try_tostr failed. gucname={:?}",
-                gucname
-            );
-            continue;
-        }
-        let gucidx = get_gucidx(&guckey.unwrap());
-        if gucidx.is_none() {
-            log::warn!("Unknown gucname. can't find the guc. guckey={:?}", gucname);
-            continue;
-        }
-        let gucidx = gucidx.unwrap();
-        macro_rules! handle_guc {
-            ($yamlto: ident, $arrname: ident, $idx: ident) => {
-                if let Some(val) = common::$yamlto(gucstr) {
-                    let valptr = &mut gucvals.$arrname[$idx as usize];
-                    *valptr = val;
-                } else {
-                    log::warn!(
-                        "invalid guc val. expected={}, guckey={:?} gucval={:?}",
-                        stringify!(yamlto),
-                        gucname,
-                        gucstr
-                    )
-                }
-            };
-        }
-        match gucidx {
-            GucIdx::B(idx) => handle_guc!(yaml_try_tobool, bool_vals, idx),
-            GucIdx::I(idx) => handle_guc!(yaml_try_toi32, int_vals, idx),
-            GucIdx::S(idx) => handle_guc!(yaml_try_tostr, str_vals, idx),
-            GucIdx::R(idx) => handle_guc!(yaml_try_tof64, real_vals, idx),
-        }
+    match get_gucidx(guckey) {
+        Some(GucIdx::B(idx)) => apply_guc!(yaml_try_tobool, apply_bool_guc, idx),
+        Some(GucIdx::I(idx)) => apply_guc!(yaml_try_toi32, apply_int_guc, idx),
+        Some(GucIdx::S(idx)) => apply_guc!(yaml_try_tostr, apply_str_guc, idx),
+        Some(GucIdx::R(idx)) => apply_guc!(yaml_try_tof64, apply_real_guc, idx),
+        _ => log::warn!("Unknown gucname. can't find the guc. guckey={:?}", guckey),
     }
-    Ok(gucvals)
 }
 
-pub fn load_apply_gucs(inputpath: &str, gucstate: &mut GucState) -> anyhow::Result<()> {
-    let gucvals = load_gucs(inputpath)?;
-    // TODO: It's not right to use FILE as the source, the value of GUC which
-    // isn't defined in the configuration file comes from their boot value.
-    for (idx, &val) in gucvals.int_vals.iter().enumerate() {
-        apply_int_guc(idx, val, gucstate, Source::FILE);
+pub fn load(inputpath: &str) -> anyhow::Result<GucState> {
+    let mut gucstate = GucState::default();
+    let yamldata = common::load_yaml(inputpath)?;
+    if let Some(yamldoc) = yamldata.first() {
+        let yamlhash = yamldoc
+            .as_hash()
+            .ok_or(anyhow::anyhow!("Unknown yaml. yamldata={:?}", yamldata))?;
+        for (gucname, gucval) in yamlhash {
+            let guckey = common::yaml_try_tostr(gucname);
+            if let Some(guckey) = guckey {
+                load_guc(&mut gucstate, &guckey, gucval);
+            } else {
+                log::warn!(
+                    "Unknown gucname. yaml_try_tostr failed. gucname={:?}",
+                    gucname
+                );
+            }
+        }
     }
-    for (idx, &val) in gucvals.bool_vals.iter().enumerate() {
-        apply_bool_guc(idx, val, gucstate, Source::FILE);
-    }
-    for (idx, &val) in gucvals.real_vals.iter().enumerate() {
-        apply_real_guc(idx, val, gucstate, Source::FILE);
-    }
-    for (idx, val) in gucvals.str_vals.iter().enumerate() {
-        // How to avoid copy here?!
-        apply_str_guc(idx, val.to_string(), gucstate, Source::FILE);
-    }
-    Ok(())
+    return Ok(gucstate);
 }
 
 pub fn get_int(gucvals: &GucState, guckey: gucdef::I) -> i32 {

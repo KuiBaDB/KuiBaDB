@@ -10,7 +10,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-use anyhow::anyhow;
+use crate::kbbail;
 use lalrpop_util::lalrpop_mod;
 
 pub mod sem;
@@ -20,6 +20,11 @@ lalrpop_mod!(sql, "/parser/sql.rs");
 pub fn parse(query: &str) -> anyhow::Result<syn::Stmt> {
     match sql::StmtParser::new().parse(query) {
         Ok(v) => Ok(v),
-        Err(err) => Err(anyhow!("Parse Error. {:?}", err)),
+        Err(e) => kbbail!(
+            ERRCODE_SYNTAX_ERROR,
+            "parse error: query={} e={:#}",
+            query,
+            e
+        ),
     }
 }

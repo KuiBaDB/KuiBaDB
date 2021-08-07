@@ -14,6 +14,8 @@ pub struct ErrCtx {
     pub msg: String,
 }
 
+// crate::on_error() has already output `code`,
+// so there is no need to output `code` here.
 impl std::fmt::Display for ErrCtx {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.msg)

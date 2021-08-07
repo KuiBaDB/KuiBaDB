@@ -19,7 +19,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 pub trait DestReceiver {
-    fn startup(&mut self, tlist: &Vec<sem::TargetEntry>) -> anyhow::Result<()>;
+    fn startup(&mut self, tlist: &Vec<sem::TargetEntry>, sess: &SessionState)
+        -> anyhow::Result<()>;
     fn receive(
         &mut self,
         tuples: &[Rc<Datums>],
@@ -330,7 +331,7 @@ pub fn exec_select(
 ) -> anyhow::Result<()> {
     let state = WorkerState::new(session);
     let mut planstate = exec_init_plan(&stmt.plan_tree, &state)?;
-    dest.startup(stmt.plan_tree.tlist())?;
+    dest.startup(stmt.plan_tree.tlist(), session)?;
     loop {
         let (rows, rownumber) = planstate.exec(&state)?;
         match rows {

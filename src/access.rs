@@ -15,9 +15,8 @@ use crate::executor::DestReceiver;
 use crate::parser::sem;
 use crate::utils::fmgr::FmgrInfo;
 use crate::utils::{SessionState, WorkerState};
-use crate::{protocol, Oid};
+use crate::{protocol, Oid, SockWriter};
 use std::debug_assert;
-use std::net::TcpStream;
 use std::rc::Rc;
 
 pub mod ckpt;
@@ -33,21 +32,16 @@ pub mod sv;
 pub mod wal;
 pub mod xact;
 
-pub struct DestRemote<'sess> {
-    session: &'sess SessionState,
-    stream: &'sess mut TcpStream,
+pub struct DestRemote<'a, 'b> {
+    stream: &'a mut SockWriter<'b>,
     typout: Vec<FmgrInfo>,
     outstr: Vec<Rc<Datums>>,
     pub processed: u64,
 }
 
-impl DestRemote<'_> {
-    pub fn new<'sess>(
-        session: &'sess SessionState,
-        stream: &'sess mut TcpStream,
-    ) -> DestRemote<'sess> {
+impl<'a, 'b> DestRemote<'a, 'b> {
+    pub fn new(stream: &'a mut SockWriter<'b>) -> DestRemote<'a, 'b> {
         DestRemote {
-            session,
             stream,
             typout: Vec::new(),
             processed: 0,
@@ -56,16 +50,20 @@ impl DestRemote<'_> {
     }
 }
 
-impl DestReceiver for DestRemote<'_> {
-    fn startup(&mut self, tlist: &Vec<sem::TargetEntry>) -> anyhow::Result<()> {
+impl DestReceiver for DestRemote<'_, '_> {
+    fn startup(
+        &mut self,
+        tlist: &Vec<sem::TargetEntry>,
+        sess: &SessionState,
+    ) -> anyhow::Result<()> {
         self.outstr.resize_with(tlist.len(), Default::default);
         self.typout.clear();
         let mut fields = Vec::new();
         for target in tlist {
             let typoid = target.expr.val_type();
-            let (typoutproc, typlen) = catalog::get_type_output_info(self.session, typoid)?;
+            let (typoutproc, typlen) = catalog::get_type_output_info(sess, typoid)?;
             self.typout
-                .push(FmgrInfo::new(typoutproc, self.session.fmgr_builtins)?);
+                .push(FmgrInfo::new(typoutproc, sess.fmgr_builtins)?);
             let fieldname = match &target.resname {
                 None => "", // TupleDescInitEntry() set name to empty if target.resname is None.
                 Some(v) => v,
@@ -107,7 +105,6 @@ impl DestReceiver for DestRemote<'_> {
                 let colstr = col.try_get_varchar_at(idx as isize).map(|v| v.as_bytes());
                 ostr.push(colstr);
             }
-            // TODO: Cache the message in memory and flush the message when necessary.
             protocol::write_message(
                 self.stream,
                 &protocol::DataRow {
