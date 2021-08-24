@@ -1,11 +1,9 @@
 
-**KuiBaDB** is another [Postgres](http://www.postgresql.org) rewritten with Rust and multi-threading, and **KuiBaDB** focus on OLAP analysis.
+**KuiBaDB** is another [PostgreSQL](http://www.postgresql.org) rewritten with Rust and multi-threading, and **KuiBaDB** focus on OLAP analysis. **KuiBaDB** is also an open source implementation of [Hologres: A Cloud-Native Service for Hybrid Serving/Analytical Processing](https://www.aliyun.com/product/bigdata/hologram).
 
 **KuiBaDB** contains only the basic features necessary for implementing an OLAP Database, such as supporting transactions but not sub-transactions. It is hoped that as an experimental field, researchers can quickly implement their ideas based on the infrastructure provided by KuiBaDB.
 
-**KuiBaDB** uses vectorization engine and is also catalog-driven. At this point, the parameter and return value type of UDF are `DatumBlock`, not `Datum`. DatumBlock is something like `Vec<Datum>`.
-
-**KuiBaDB** uses columnar storage introduced in 'Hologres: A Cloud-Native Service for Hybrid Serving/Analytical Processing'. But I removed the Delete Map and added xmin, xmax for each row, xmin/xmax is saved in row storage.
+**KuiBaDB** uses vectorization engine and is also catalog-driven. **KuiBaDB** uses columnar storage introduced in [Hologres: A Cloud-Native Service for Hybrid Serving/Analytical Processing](https://www.aliyun.com/product/bigdata/hologram). But I removed the Delete Map and added xmin, xmax for each row, xmin/xmax is saved in row storage.
 
 # Roadmap
 
@@ -107,6 +105,8 @@
     Time: 13483.658 ms (00:13.484)
     ```
 
+-   [ ] implement the HOS introduced in [Hologres](https://www.aliyun.com/product/bigdata/hologram) with rust async/await.
+
 -   [ ] Add SeqScan
 
 -   [ ] Add Parallel SeqScan
@@ -123,5 +123,3 @@ export KUIBADB_DATADIR=/tmp/kuibadir4test
 echo 'clog_l2cache_size: 1' >> $KUIBADB_DATADIR/kuiba.conf
 cargo test
 ```
-
-Greenplum, Postgres, Rust is all the best!!!
