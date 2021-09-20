@@ -8,37 +8,34 @@ edition = "2018"
 
 [dependencies]
 yaml-rust = "0.4"
-clap = "2.33"
-anyhow = "1.0"
-lazy_static = "1.4"
-log = "0.4"
-stderrlog = "0.5"
-sqlite = "0.25"
-rand = "0.7"
-byteorder = "1.3"
+clap = "2"
+anyhow = "1"
 lalrpop-util = "0.19"
-nix = "0.19"
-lru = "0.6.3"
-static_assertions = "1"
-crc32c = "0.6"
-memoffset = "0.6.4"
-tempfile = "3.2"
-chrono = "0.4"
-bit-vec = "0.6"
-md5 = "0.7"
-crossbeam-channel = "0.5"
-threadpool = "1.8"
-
+kbio = {path="../kbio"}
+tokio = {version = "1", features=["rt-multi-thread", "rt", "io-util"]}
+tracing = "0.1"
+tracing-appender = "0.1"
+tracing-subscriber = "0.2"
+tracing-log = "0.1"
+parking_lot = "0.11"
+log = "0.4"
+lazy_static = "1"
 
 [build-dependencies]
 yaml-rust = "0.4"
-quote = "1.0"
-proc-macro2 = "1.0"
-anyhow = "1.0"
+quote = "1"
+proc-macro2 = "1"
+anyhow = "1"
 
 [build-dependencies.lalrpop]
 version = "0.19"
 features = ["lexer"]
 
 [profile.release]
+# We `wreq.write()` in handle_insert_ret() return an error,
+# it means that `self.file.write.done()` will never be called,
+# which means that `wal::GlobalStateExt::write` will never be updated,
+# which means that subsequent calls of `wal::insert_record()` will block forever.
+# So we should abort the whole process when `wreq.write()` fails.
+# PG uses `elog(PANIC)` to achieve it, and we use abort-on-panic.
 panic = 'abort'

@@ -46,7 +46,6 @@
   long_desc: The valid values are OFF, ERROR, WARNING, INFO, DEBUG1, DEBUG2.
   boot_val: DEBUG2
   preassign: log_min_messages_preassign
-  show: log_min_messages_show
 - vartype: STR
   name: server_version
   context: Internal
@@ -147,3 +146,54 @@
   context: UserSet
   short_desc: "batch_size"
   boot_val: 1024
+- vartype: INT
+  name: tokio_max_blocking_threads
+  context: KuiBaDB
+  short_desc: "max_blocking_threads for tokio Runtime"
+  boot_val: 512
+- vartype: INT
+  name: tokio_thread_keep_alive
+  context: KuiBaDB
+  short_desc: "thread_keep_alive for tokio Runtime. unit: Second"
+  boot_val: 16
+- vartype: INT
+  name: tokio_thread_stack_size
+  context: KuiBaDB
+  short_desc: "thread_stack_size for tokio Runtime. unit: byte"
+  boot_val: 2 * 1024 * 1024
+- vartype: INT
+  name: tokio_worker_threads
+  context: KuiBaDB
+  short_desc: "worker_threads for tokio Runtime. 0 means the number of cores available to the system."
+  boot_val: 0
+- vartype: INT
+  name: iopoll_uring_num
+  context: KuiBaDB
+  short_desc: "iopoll_uring_num. 0 disable iopoll uring"
+  boot_val: 1
+- vartype: INT
+  name: non_iopoll_uring_num
+  context: KuiBaDB
+  short_desc: "iopoll_uring_num"
+  boot_val: 1
+- vartype: INT
+  name: iopoll_uring_depth
+  context: KuiBaDB
+  short_desc: "iopoll_uring_num"
+  boot_val: 256
+- vartype: INT
+  name: non_iopoll_uring_depth
+  context: KuiBaDB
+  short_desc: "iopoll_uring_num"
+  boot_val: 2048
+- vartype: INT
+  name: iopoll_uring_sq_thread_idle
+  context: KuiBaDB
+  short_desc: "iopoll_uring_sq_thread_idle. Unit: Second"
+  boot_val: 1
+- vartype: INT
+  name: non_iopoll_uring_sq_thread_idle
+  context: KuiBaDB
+  short_desc: "non_iopoll_uring_sq_thread_idle. Unit: Second"
+  boot_val: 1
+

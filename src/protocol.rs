@@ -10,46 +10,53 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-use crate::utils::ser;
-use crate::{errctx, kbanyhow, kbensure, Oid, OptOid, SockReader, SockWriter};
-use crate::{guc, AttrNumber};
+use crate::guc;
+use crate::utils::{ser, AttrNumber};
+use crate::{errctx, kbanyhow, kbensure, Oid, OptOid, Sock};
 use anyhow::Context;
-use byteorder::{NetworkEndian, ReadBytesExt};
 use std::collections::HashMap;
 use std::convert::TryInto;
-use std::io::{Cursor, Read, Write};
+use std::io::{self, Cursor};
 use std::mem::size_of;
 use std::str::from_utf8;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tracing::trace;
 
 mod errcodes;
-pub use errcodes::*;
+pub(crate) use errcodes::*;
 
-fn read_body(stream: &mut SockReader, content: &mut Vec<u8>) -> std::io::Result<()> {
-    let len = stream.read_u32::<NetworkEndian>()?;
-    content.resize(len as usize - size_of::<u32>(), 0);
-    stream.read_exact(content.as_mut_slice())?;
+async fn read_body(stream: &mut Sock, content: &mut Vec<u8>) -> io::Result<()> {
+    let len = stream.s.read_u32().await?;
+    let msglen = len as usize - size_of::<u32>();
+    content.reserve(msglen);
+    unsafe {
+        content.set_len(msglen);
+    }
+    stream.s.read_exact(content.as_mut_slice()).await?;
     return Ok(());
 }
 
-pub fn read_message(stream: &mut SockReader) -> std::io::Result<(i8, Vec<u8>)> {
-    let mut content = Vec::new();
-    let msgtype = stream.read_i8()?;
-    read_body(stream, &mut content)?;
-    Ok((msgtype, content))
+pub(crate) async fn read_message(stream: &mut Sock, content: &mut Vec<u8>) -> io::Result<i8> {
+    let msgtype = stream.s.read_i8().await?;
+    read_body(stream, content).await?;
+    Ok(msgtype)
 }
 
-pub fn read_startup_message(stream: &mut SockReader, content: &mut Vec<u8>) -> std::io::Result<()> {
-    read_body(stream, content)
+pub(crate) async fn read_startup_message(
+    stream: &mut Sock,
+    content: &mut Vec<u8>,
+) -> io::Result<()> {
+    read_body(stream, content).await
 }
 
 #[derive(Debug)]
-pub struct CancelRequest {
-    pub sess: u32,
-    pub key: u32,
+pub(crate) struct CancelRequest {
+    pub(crate) sess: u32,
+    pub(crate) key: u32,
 }
 
 impl CancelRequest {
-    pub fn deserialize(d: &[u8]) -> Option<Self> {
+    pub(crate) fn deserialize(d: &[u8]) -> Option<Self> {
         if d.len() != 12 || d[..4] != [0x04, 0xd2, 0x16, 0x2e] {
             None
         } else {
@@ -61,10 +68,10 @@ impl CancelRequest {
     }
 }
 
-pub struct SSLRequest {}
+pub(crate) struct SSLRequest {}
 
 impl SSLRequest {
-    pub fn deserialize(d: &[u8]) -> Option<Self> {
+    pub(crate) fn deserialize(d: &[u8]) -> Option<Self> {
         if d != [0x04, 0xd2, 0x16, 0x2f] {
             None
         } else {
@@ -74,19 +81,21 @@ impl SSLRequest {
 }
 
 #[repr(i8)]
-pub enum MsgType {
+pub(crate) enum MsgType {
     Query = 'Q' as i8,
     Terminate = 'X' as i8,
     EOF = -1,
 }
 
-pub fn write_message<T: Message>(stream: &mut SockWriter, msg: &T) {
+pub(crate) async fn write_message<T: Message>(stream: &mut Sock, msg: &T) {
     // ignore error, just as PostgreSQL.
-    let _ = stream.write_all(&msg.serialize());
+    msg.serialize(&mut stream.serbuf);
+    let _ = stream.s.write_all(&stream.serbuf).await;
+    return;
 }
 
-pub trait Message {
-    fn serialize(&self) -> Vec<u8>;
+pub(crate) trait Message {
+    fn serialize(&self, buf: &mut Vec<u8>);
 }
 
 const STARTUP_USER_PARAM: &str = "user";
@@ -94,20 +103,18 @@ const STARTUP_DATABASE_PARAM: &str = "database";
 const STARTUP_CLIENT_ENCODING: &str = "client_encoding";
 
 #[derive(Debug)]
-pub struct StartupMessage<'a> {
-    pub major_ver: u16,
-    pub minor_ver: u16,
+pub(crate) struct StartupMessage<'a> {
+    pub(crate) major_ver: u16,
+    pub(crate) minor_ver: u16,
     username: &'a str,
-    pub params: HashMap<&'a str, &'a str>,
+    pub(crate) params: HashMap<&'a str, &'a str>,
 }
 
 fn find(d: &[u8], start: usize, val: u8) -> i64 {
-    for (idx, &dv) in d[start..].iter().enumerate() {
-        if dv == val {
-            return (idx + start) as i64;
-        }
-    }
-    -1
+    d[start..]
+        .iter()
+        .position(|&v| v == val)
+        .map_or(-1, |idx| (idx + start) as i64)
 }
 
 fn read_cstr<'a>(cursor: &mut Cursor<&'a [u8]>) -> anyhow::Result<&'a str> {
@@ -130,11 +137,16 @@ fn read_cstr<'a>(cursor: &mut Cursor<&'a [u8]>) -> anyhow::Result<&'a str> {
 }
 
 impl StartupMessage<'_> {
-    pub fn deserialize(d: &[u8]) -> anyhow::Result<StartupMessage<'_>> {
+    pub(crate) fn deserialize(d: &[u8]) -> anyhow::Result<StartupMessage<'_>> {
         //log::trace!("StartupMessage deserialize. d={:?}", d);
-        let mut cursor = Cursor::new(d);
-        let major_ver = cursor.read_u16::<NetworkEndian>()?;
-        let minor_ver = cursor.read_u16::<NetworkEndian>()?;
+        kbensure!(
+            d.len() >= 4,
+            ERRCODE_PROTOCOL_VIOLATION,
+            "invalid StartupMessage"
+        );
+        let minor_ver = u16::from_le_bytes([d[3], d[2]]);
+        let major_ver = u16::from_le_bytes([d[1], d[0]]);
+        let mut cursor = Cursor::new(&d[4..]);
         let mut params = HashMap::new();
         loop {
             let name = read_cstr(&mut cursor)?;
@@ -155,17 +167,17 @@ impl StartupMessage<'_> {
         });
     }
 
-    pub fn user(&self) -> &str {
+    pub(crate) fn user(&self) -> &str {
         self.username
     }
 
-    pub fn database(&self) -> &str {
+    pub(crate) fn database(&self) -> &str {
         self.params
             .get(&STARTUP_DATABASE_PARAM)
             .map_or_else(|| self.user(), |v| *v)
     }
 
-    pub fn check_client_encoding(&self, expected: &str) -> bool {
+    pub(crate) fn check_client_encoding(&self, expected: &str) -> bool {
         self.params.get(&STARTUP_CLIENT_ENCODING).map_or(
             true, /* pgbench don't send STARTUP_CLIENT_ENCODING */
             |v| v.eq_ignore_ascii_case(expected),
@@ -175,35 +187,36 @@ impl StartupMessage<'_> {
 
 // See https://www.postgresql.org/docs/devel/protocol-error-fields.html for details.
 #[derive(Default)]
-pub struct ErrFields<'a> {
-    pub severity: Option<&'a str>,
-    pub code: Option<&'a str>,
-    pub msg: Option<&'a str>,
-    // pub V: Option<&'a str>,
-    // pub D: Option<&'a str>,
-    // pub H: Option<&'a str>,
-    // pub P: Option<&'a str>,
-    // pub p: Option<&'a str>,
-    // pub q: Option<&'a str>,
-    // pub W: Option<&'a str>,
-    // pub s: Option<&'a str>,
-    // pub t: Option<&'a str>,
-    // pub c: Option<&'a str>,
-    // pub d: Option<&'a str>,
-    // pub n: Option<&'a str>,
-    // pub F: Option<&'a str>,
-    // pub L: Option<&'a str>,
-    // pub R: Option<&'a str>,
+pub(crate) struct ErrFields<'a> {
+    pub(crate) severity: Option<&'a str>,
+    pub(crate) code: Option<&'a str>,
+    pub(crate) msg: Option<&'a str>,
+    // pub(crate) V: Option<&'a str>,
+    // pub(crate) D: Option<&'a str>,
+    // pub(crate) H: Option<&'a str>,
+    // pub(crate) P: Option<&'a str>,
+    // pub(crate) p: Option<&'a str>,
+    // pub(crate) q: Option<&'a str>,
+    // pub(crate) W: Option<&'a str>,
+    // pub(crate) s: Option<&'a str>,
+    // pub(crate) t: Option<&'a str>,
+    // pub(crate) c: Option<&'a str>,
+    // pub(crate) d: Option<&'a str>,
+    // pub(crate) n: Option<&'a str>,
+    // pub(crate) F: Option<&'a str>,
+    // pub(crate) L: Option<&'a str>,
+    // pub(crate) R: Option<&'a str>,
 }
 
-fn serialize_errmsg(typ: u8, fields: &ErrFields) -> Vec<u8> {
-    let mut out = Vec::<u8>::with_capacity(32);
+fn serialize_errmsg(typ: u8, fields: &ErrFields, out: &mut Vec<u8>) {
+    out.reserve(32);
+    out.clear();
     out.resize(5, typ);
     macro_rules! write_field {
         ($field: ident, $fieldtype: literal) => {
             if let Some(v) = fields.$field {
                 out.push($fieldtype as u8);
-                ser::ser_cstr(&mut out, v);
+                ser::ser_cstr(out, v);
             }
         };
     }
@@ -227,19 +240,19 @@ fn serialize_errmsg(typ: u8, fields: &ErrFields) -> Vec<u8> {
     // write_field!(R, 'R');
     out.push(0);
     let msglen = out.len() - 1;
-    ser::ser_be_u32_at(&mut out, 1, msglen as u32);
-    return out;
+    ser::ser_be_u32_at(out, 1, msglen as u32);
+    return;
 }
 
-pub const SEVERITY_ERR: &str = "ERROR";
-pub const SEVERITY_FATAL: &str = "FATAL";
+pub(crate) const SEVERITY_ERR: &str = "ERROR";
+pub(crate) const SEVERITY_FATAL: &str = "FATAL";
 
-pub struct ErrorResponse<'a> {
-    pub fields: ErrFields<'a>,
+pub(crate) struct ErrorResponse<'a> {
+    pub(crate) fields: ErrFields<'a>,
 }
 
 impl<'a> ErrorResponse<'a> {
-    pub fn new<'b: 'a, 'c: 'a, 'd: 'a>(
+    pub(crate) fn new<'b: 'a, 'c: 'a, 'd: 'a>(
         severity: &'b str,
         code: &'c str,
         msg: &'d str,
@@ -256,80 +269,83 @@ impl<'a> ErrorResponse<'a> {
 }
 
 impl<'a> Message for ErrorResponse<'a> {
-    fn serialize(&self) -> Vec<u8> {
-        serialize_errmsg('E' as u8, &self.fields)
+    fn serialize(&self, buff: &mut Vec<u8>) {
+        serialize_errmsg('E' as u8, &self.fields, buff)
     }
 }
 
-pub struct AuthenticationOk {}
+pub(crate) struct AuthenticationOk {}
 
 impl Message for AuthenticationOk {
-    fn serialize(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(9);
+    fn serialize(&self, out: &mut Vec<u8>) {
+        out.reserve(9);
+        out.clear();
         out.push('R' as u8);
-        ser::ser_be_u32(&mut out, 8);
-        ser::ser_be_u32(&mut out, 0);
-        return out;
+        ser::ser_be_u32(out, 8);
+        ser::ser_be_u32(out, 0);
+        return;
     }
 }
 
-pub struct BackendKeyData {
+pub(crate) struct BackendKeyData {
     backendid: u32,
     key: u32,
 }
 
 impl BackendKeyData {
-    pub fn new(backendid: u32, key: u32) -> BackendKeyData {
+    pub(crate) fn new(backendid: u32, key: u32) -> BackendKeyData {
         BackendKeyData { backendid, key }
     }
 }
 
 impl Message for BackendKeyData {
-    fn serialize(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(1 + 4 * 3);
-        out.push('K' as u8);
-        ser::ser_be_u32(&mut out, 12);
-        ser::ser_be_u32(&mut out, self.backendid);
-        ser::ser_be_u32(&mut out, self.key);
-        return out;
+    fn serialize(&self, buff: &mut Vec<u8>) {
+        buff.reserve(1 + 4 * 3);
+        buff.clear();
+        buff.push('K' as u8);
+        ser::ser_be_u32(buff, 12);
+        ser::ser_be_u32(buff, self.backendid);
+        ser::ser_be_u32(buff, self.key);
+        return;
     }
 }
 
 #[repr(u8)]
 #[derive(Copy, Clone)]
-pub enum XactStatus {
+pub(crate) enum XactStatus {
     NotInBlock = 'I' as u8,
     InBlock = 'T' as u8,
     Failed = 'E' as u8,
 }
 
-pub struct ReadyForQuery {
+pub(crate) struct ReadyForQuery {
     status: XactStatus,
 }
 
 impl ReadyForQuery {
-    pub fn new(status: XactStatus) -> ReadyForQuery {
+    pub(crate) fn new(status: XactStatus) -> ReadyForQuery {
         ReadyForQuery { status }
     }
 }
 
 impl Message for ReadyForQuery {
-    fn serialize(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(1 * 2 + 4);
-        out.push('Z' as u8);
-        ser::ser_be_u32(&mut out, 5);
-        out.push(self.status as u8);
-        return out;
+    fn serialize(&self, buff: &mut Vec<u8>) {
+        buff.reserve(1 * 2 + 4);
+        buff.clear();
+        buff.push('Z' as u8);
+        ser::ser_be_u32(buff, 5);
+        buff.push(self.status as u8);
+        return;
     }
 }
 
 #[derive(Debug)]
-pub struct Query<'a> {
-    pub query: &'a str,
+pub(crate) struct Query<'a> {
+    pub(crate) query: &'a str,
 }
 
 impl Query<'_> {
-    pub fn deserialize(d: &[u8]) -> anyhow::Result<Query<'_>> {
+    pub(crate) fn deserialize(d: &[u8]) -> anyhow::Result<Query<'_>> {
         kbensure!(
             !d.is_empty(),
             ERRCODE_PROTOCOL_VIOLATION,
@@ -341,22 +357,23 @@ impl Query<'_> {
     }
 }
 
-pub struct CommandComplete<'a> {
-    pub tag: &'a str,
+pub(crate) struct CommandComplete<'a> {
+    pub(crate) tag: &'a str,
 }
 
 impl Message for CommandComplete<'_> {
-    fn serialize(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(32);
-        out.resize(5, 'C' as u8);
-        ser::ser_cstr(&mut out, self.tag);
-        let msglen = out.len() - 1;
-        ser::ser_be_u32_at(&mut out, 1, msglen as u32);
-        return out;
+    fn serialize(&self, buff: &mut Vec<u8>) {
+        buff.reserve(32);
+        buff.clear();
+        buff.resize(5, 'C' as u8);
+        ser::ser_cstr(buff, self.tag);
+        let msglen = buff.len() - 1;
+        ser::ser_be_u32_at(buff, 1, msglen as u32);
+        return;
     }
 }
 
-pub struct ParameterStatus<'a> {
+pub(crate) struct ParameterStatus<'a> {
     name: &'a str,
     value: &'a str,
 }
@@ -368,47 +385,50 @@ impl<'a> ParameterStatus<'a> {
 }
 
 impl Message for ParameterStatus<'_> {
-    fn serialize(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(64);
-        out.resize(5, 'S' as u8);
-        ser::ser_cstr(&mut out, self.name);
-        ser::ser_cstr(&mut out, self.value);
-        let msglen = out.len() - 1;
-        ser::ser_be_u32_at(&mut out, 1, msglen as u32);
-        return out;
+    fn serialize(&self, buff: &mut Vec<u8>) {
+        buff.reserve(64);
+        buff.clear();
+        buff.resize(5, 'S' as u8);
+        ser::ser_cstr(buff, self.name);
+        ser::ser_cstr(buff, self.value);
+        let msglen = buff.len() - 1;
+        ser::ser_be_u32_at(buff, 1, msglen as u32);
+        return;
     }
 }
 
-pub fn report_guc(
+pub(crate) async fn report_guc(
     name: &str,
     gucvals: &guc::GucState,
     gucidx: guc::GucIdx,
-    stream: &mut SockWriter,
+    stream: &mut Sock,
 ) {
     let gen = guc::get_guc_generic(gucidx);
     if !gen.should_report() {
         return;
     }
     let value = guc::show(gen, gucvals, gucidx);
-    log::trace!("report guc. name={} value={}", name, value);
+    trace!("report guc. name={} value={}", name, value);
     let msg = ParameterStatus::new(name, &value);
-    write_message(stream, &msg);
+    write_message(stream, &msg).await;
+    return;
 }
 
-pub fn report_all_gucs(gucvals: &guc::GucState, stream: &mut SockWriter) {
+pub(crate) async fn report_all_gucs(gucvals: &guc::GucState, stream: &mut Sock) {
     for (&name, &gucidx) in guc::GUC_NAMEINFO_MAP.iter() {
-        report_guc(name, gucvals, gucidx, stream)
+        report_guc(name, gucvals, gucidx, stream).await
     }
 }
 
-pub struct EmptyQueryResponse {}
+pub(crate) struct EmptyQueryResponse {}
 
 impl Message for EmptyQueryResponse {
-    fn serialize(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(1 + 4);
-        out.push('I' as u8);
-        ser::ser_be_u32(&mut out, 4);
-        return out;
+    fn serialize(&self, buff: &mut Vec<u8>) {
+        buff.reserve(1 + 4);
+        buff.clear();
+        buff.push('I' as u8);
+        ser::ser_be_u32(buff, 4);
+        return;
     }
 }
 
@@ -417,7 +437,7 @@ enum Format {
     Text = 0,
 }
 
-pub struct FieldDesc<'a> {
+pub(crate) struct FieldDesc<'a> {
     name: &'a str,
     reloid: OptOid,
     typoid: Oid,
@@ -428,7 +448,7 @@ pub struct FieldDesc<'a> {
 }
 
 impl FieldDesc<'_> {
-    pub const fn new(name: &str, typoid: Oid, typmod: i32, typlen: i16) -> FieldDesc<'_> {
+    pub(crate) const fn new(name: &str, typoid: Oid, typmod: i32, typlen: i16) -> FieldDesc<'_> {
         FieldDesc {
             name,
             reloid: OptOid(None),
@@ -441,57 +461,59 @@ impl FieldDesc<'_> {
     }
 }
 
-pub struct RowDescription<'a, 'b> {
-    pub fields: &'b [FieldDesc<'a>],
+pub(crate) struct RowDescription<'a, 'b> {
+    pub(crate) fields: &'b [FieldDesc<'a>],
 }
 
 impl Message for RowDescription<'_, '_> {
-    fn serialize(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(64);
-        out.resize(5, 'T' as u8);
-        ser::ser_be_u16(&mut out, self.fields.len() as u16);
+    fn serialize(&self, buff: &mut Vec<u8>) {
+        buff.reserve(64);
+        buff.clear();
+        buff.resize(5, 'T' as u8);
+        ser::ser_be_u16(buff, self.fields.len() as u16);
         for field in self.fields {
             let attnum: u16 = match field.attnum {
                 None => 0,
                 Some(v) => v.get(),
             };
-            ser::ser_cstr(&mut out, field.name);
-            ser::ser_be_u32(&mut out, field.reloid.into());
-            ser::ser_be_u16(&mut out, attnum);
-            ser::ser_be_u32(&mut out, field.typoid.get());
-            ser::ser_be_i16(&mut out, field.typlen.into());
-            ser::ser_be_i32(&mut out, field.typmod.into());
-            ser::ser_be_u16(&mut out, field.format as u16);
+            ser::ser_cstr(buff, field.name);
+            ser::ser_be_u32(buff, field.reloid.into());
+            ser::ser_be_u16(buff, attnum);
+            ser::ser_be_u32(buff, field.typoid.get());
+            ser::ser_be_i16(buff, field.typlen.into());
+            ser::ser_be_i32(buff, field.typmod.into());
+            ser::ser_be_u16(buff, field.format as u16);
         }
-        let msglen = out.len() - 1;
-        ser::ser_be_u32_at(&mut out, 1, msglen as u32);
-        return out;
+        let msglen = buff.len() - 1;
+        ser::ser_be_u32_at(buff, 1, msglen as u32);
+        return;
     }
 }
 
-pub struct DataRow<'a, 'b> {
-    pub data: &'b [Option<&'a [u8]>],
+pub(crate) struct DataRow<'a, 'b> {
+    pub(crate) data: &'b [Option<&'a [u8]>],
 }
 
 impl Message for DataRow<'_, '_> {
-    fn serialize(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(64);
-        out.resize(5, 'D' as u8);
-        ser::ser_be_u16(&mut out, self.data.len() as u16);
+    fn serialize(&self, buff: &mut Vec<u8>) {
+        buff.reserve(64);
+        buff.clear();
+        buff.resize(5, 'D' as u8);
+        ser::ser_be_u16(buff, self.data.len() as u16);
         for &col in self.data {
             match col {
                 None => {
-                    ser::ser_be_i32(&mut out, -1);
+                    ser::ser_be_i32(buff, -1);
                 }
                 Some(dataval) => {
                     // no need for trailing '\0'
-                    ser::ser_be_i32(&mut out, dataval.len() as i32);
-                    out.extend_from_slice(dataval);
+                    ser::ser_be_i32(buff, dataval.len() as i32);
+                    buff.extend_from_slice(dataval);
                 }
             }
         }
-        let msglen = out.len() - 1;
-        ser::ser_be_u32_at(&mut out, 1, msglen as u32);
-        return out;
+        let msglen = buff.len() - 1;
+        ser::ser_be_u32_at(buff, 1, msglen as u32);
+        return;
     }
 }

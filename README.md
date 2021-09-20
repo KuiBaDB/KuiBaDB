@@ -1,9 +1,11 @@
 
-**KuiBaDB** is another [PostgreSQL](http://www.postgresql.org) rewritten with Rust and multi-threading, and **KuiBaDB** focus on OLAP analysis. **KuiBaDB** is also an open source implementation of [Hologres: A Cloud-Native Service for Hybrid Serving/Analytical Processing](https://www.aliyun.com/product/bigdata/hologram).
+**KuiBaDB** is another [PostgreSQL](http://www.postgresql.org) rewritten with **Asynchronous Rust**, and **KuiBaDB** focus on OLAP analysis. **KuiBaDB** is also an open source implementation of [Hologres: A Cloud-Native Service for Hybrid Serving/Analytical Processing](https://www.aliyun.com/product/bigdata/hologram).
+
+**KuiBaDB** is built on [kbio](https://github.com/KuiBaDB/kbio) and [tokio](https://docs.rs/tokio/). We only use the 'rt-multi-thread', 'rt' and 'io-util' features of tokio. All IO, including file IO and network IO, and asynchronous syscall are powered by [kbio](https://github.com/KuiBaDB/kbio).
 
 **KuiBaDB** contains only the basic features necessary for implementing an OLAP Database, such as supporting transactions but not sub-transactions. It is hoped that as an experimental field, researchers can quickly implement their ideas based on the infrastructure provided by KuiBaDB.
 
-**KuiBaDB** uses vectorization engine and is also catalog-driven. **KuiBaDB** uses columnar storage introduced in [Hologres: A Cloud-Native Service for Hybrid Serving/Analytical Processing](https://www.aliyun.com/product/bigdata/hologram). But I removed the Delete Map and added xmin, xmax for each row, xmin/xmax is saved in row storage.
+**KuiBaDB** uses vectorization engine and is also catalog-driven. **KuiBaDB** uses columnar storage introduced in [Hologres](https://www.aliyun.com/product/bigdata/hologram). But I removed the Delete Map and added xmin, xmax for each row, xmin/xmax is saved in row storage.
 
 # Roadmap
 

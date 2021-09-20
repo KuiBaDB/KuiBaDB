@@ -59,10 +59,10 @@ macro_rules! kbanyhow {
 #[macro_export]
 macro_rules! kbbail {
     ($code:ident, $msg:literal $(,)?) => {
-        return Err($crate::kbanyhow!($code, $msg))
+        return Err($crate::kbanyhow!($code, $msg)).into()
     };
     ($code:ident, $fmt:expr, $($arg:tt)*) => {
-        return Err($crate::kbanyhow!($code, $fmt, $($arg)*))
+        return Err($crate::kbanyhow!($code, $fmt, $($arg)*)).into()
     };
 }
 
@@ -70,12 +70,12 @@ macro_rules! kbbail {
 macro_rules! kbensure {
     ($cond:expr, $code:ident, $msg:literal $(,)?) => {
         if !$cond {
-            return Err($crate::kbanyhow!($code, $msg))
+            return Err($crate::kbanyhow!($code, $msg)).into()
         }
     };
     ($cond:expr, $code:ident, $fmt:expr, $($arg:tt)*) => {
         if !$cond {
-            return Err($crate::kbanyhow!($code, $fmt, $($arg)*))
+            return Err($crate::kbanyhow!($code, $fmt, $($arg)*)).into()
         }
     };
 }

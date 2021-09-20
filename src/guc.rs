@@ -12,12 +12,14 @@ limitations under the License.
 */
 mod gucdef;
 use crate::common;
+use crate::LOG_FILTER_RELOAD_HANDLER;
 pub use gucdef::B::*;
 pub use gucdef::I::*;
 pub use gucdef::R::*;
 pub use gucdef::S::*;
 pub use gucdef::{GucIdx, GucVals, BOOL_GUCS, GUC_NAMEINFO_MAP, INT_GUCS, REAL_GUCS, STR_GUCS};
-use log;
+use tracing::warn;
+use tracing_subscriber::filter::EnvFilter;
 use yaml_rust::Yaml;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd)]
@@ -36,10 +38,6 @@ const REPORT: u32 = 0x0010;
 pub struct GucState {
     pub vals: GucVals,
     // other state derived from guc should be placed here.
-
-    // log_min_messages
-    pub loglvl: log::LevelFilter,
-
     pub base_search_path_valid: bool,
 }
 
@@ -47,7 +45,6 @@ impl Default for GucState {
     fn default() -> Self {
         GucState {
             vals: GucVals::default(),
-            loglvl: log::LevelFilter::Trace,
             base_search_path_valid: false,
         }
     }
@@ -149,10 +146,9 @@ fn preassign(gucgen: &Generic, gucsrc: Source) -> bool {
         Source::SET => gucgen.context >= Context::SuSet,
     };
     if !ret {
-        log::warn!(
+        warn!(
             "common preassign returns false. gucctx={:?} gucsrc={:?}",
-            gucgen.context,
-            gucsrc
+            gucgen.context, gucsrc
         );
     }
     ret
@@ -199,7 +195,7 @@ fn load_guc(gucstate: &mut GucState, guckey: &str, gucval: &Yaml) {
             if let Some(val) = common::$yamlto(gucval) {
                 $apply($idx as usize, val, gucstate, Source::FILE);
             } else {
-                log::warn!(
+                warn!(
                     "invalid guc val. expected={}, guckey={:?} gucval={:?}",
                     stringify!(yamlto),
                     guckey,
@@ -213,7 +209,7 @@ fn load_guc(gucstate: &mut GucState, guckey: &str, gucval: &Yaml) {
         Some(GucIdx::I(idx)) => apply_guc!(yaml_try_toi32, apply_int_guc, idx),
         Some(GucIdx::S(idx)) => apply_guc!(yaml_try_tostr, apply_str_guc, idx),
         Some(GucIdx::R(idx)) => apply_guc!(yaml_try_tof64, apply_real_guc, idx),
-        _ => log::warn!("Unknown gucname. can't find the guc. guckey={:?}", guckey),
+        _ => warn!("Unknown gucname. can't find the guc. guckey={:?}", guckey),
     }
 }
 
@@ -229,7 +225,7 @@ pub fn load(inputpath: &str) -> anyhow::Result<GucState> {
             if let Some(guckey) = guckey {
                 load_guc(&mut gucstate, &guckey, gucval);
             } else {
-                log::warn!(
+                warn!(
                     "Unknown gucname. yaml_try_tostr failed. gucname={:?}",
                     gucname
                 );
@@ -253,30 +249,22 @@ pub fn get_str(gucvals: &GucState, guckey: gucdef::S) -> &str {
 
 // ========== hook =======
 
-fn log_min_messages_preassign(val: &mut String, gucstate: &mut GucState) -> bool {
-    gucstate.loglvl = match val.as_str() {
-        "OFF" => log::LevelFilter::Off,
-        "ERROR" => log::LevelFilter::Error,
-        "WARNING" => log::LevelFilter::Warn,
-        "INFO" => log::LevelFilter::Info,
-        "DEBUG1" => log::LevelFilter::Debug,
-        "DEBUG2" => log::LevelFilter::Trace,
+fn log_min_messages_preassign(val: &mut String, _gucstate: &mut GucState) -> bool {
+    let (level, lvlfilter) = match val.as_str() {
+        "OFF" => ("off", log::LevelFilter::Off),
+        "ERROR" => ("error", log::LevelFilter::Error),
+        "WARNING" => ("warn", log::LevelFilter::Warn),
+        "INFO" => ("info", log::LevelFilter::Info),
+        "DEBUG1" => ("debug", log::LevelFilter::Debug),
+        "DEBUG2" => ("trace", log::LevelFilter::Trace),
         _ => return false,
     };
-    log::set_max_level(gucstate.loglvl);
-    true
-}
-
-fn log_min_messages_show(_: &GucState) -> String {
-    match log::max_level() {
-        log::LevelFilter::Off => "OFF",
-        log::LevelFilter::Error => "ERROR",
-        log::LevelFilter::Warn => "WARNING",
-        log::LevelFilter::Info => "INFO",
-        log::LevelFilter::Debug => "DEBUG1",
-        log::LevelFilter::Trace => "DEBUG2",
+    if let Err(err) = unsafe { LOG_FILTER_RELOAD_HANDLER.unwrap() }.reload(EnvFilter::new(level)) {
+        warn!("log_min_messages_preassign failed. val={} err={}", val, err);
+        return false;
     }
-    .to_string()
+    log::set_max_level(lvlfilter);
+    true
 }
 
 fn search_path_preassign(_val: &mut String, gucstate: &mut GucState) -> bool {
