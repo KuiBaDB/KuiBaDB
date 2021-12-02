@@ -11,7 +11,7 @@ yaml-rust = "0.4"
 clap = "2"
 anyhow = "1"
 lalrpop-util = "0.19"
-kbio = {path="../kbio"}
+kbio = {git="https://github.com/KuiBaDB/kbio.git"}
 tokio = {version = "1", features=["rt-multi-thread", "rt", "io-util"]}
 tracing = "0.1"
 tracing-appender = "0.1"

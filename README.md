@@ -7,6 +7,18 @@
 
 **KuiBaDB** uses vectorization engine and is also catalog-driven. **KuiBaDB** uses columnar storage introduced in [Hologres](https://www.aliyun.com/product/bigdata/hologram). But I removed the Delete Map and added xmin, xmax for each row, xmin/xmax is saved in row storage.
 
+# Build and Play
+
+```bash
+$ cargo build
+$ mkdir -p /tmp/kuiba4test
+$ echo 'clog_l2cache_size: 1' >> /tmp/kuiba4test/kuiba.conf
+$ ./target/debug/kuiba -D /tmp/kuiba4test
+
+$ # From another session.
+$ psql -h 127.0.0.1 -p 1218 kuiba
+```
+
 # Roadmap
 
 **KuiBaDB** is only developed in my free time, so the progress could be very slow.
@@ -116,12 +128,3 @@
 -   [ ] Add checkpointer
 
 -   ~~[ ] Rewrite Greenplum based on **KuiBaDB**~~
-
-# Run Test
-
-```
-export KUIBADB_DATADIR=/tmp/kuibadir4test
-./target/debug/initdb  $KUIBADB_DATADIR
-echo 'clog_l2cache_size: 1' >> $KUIBADB_DATADIR/kuiba.conf
-cargo test
-```
